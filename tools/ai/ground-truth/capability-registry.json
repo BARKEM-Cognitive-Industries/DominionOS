@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "registry_version": "0.1.0",
+  "description": "Canonical ground-truth list of every capability/service the DominionOS internal LLM is allowed to invoke. Synthetic tool-calling data (D2/D3/D4/D5/D8) is rejected if it references a capability not defined here, or violates the monotonicity rule (a call may not request permissions exceeding its parent capability). This file IS the OS's service contract.",
+  "permission_lattice": {
+    "note": "Permissions are partially ordered. A derived capability C_derived must satisfy C_derived ⊆ C_source. Order (broad → narrow): admin > write > append > read > observe.",
+    "order": ["admin", "write", "append", "read", "observe"]
+  },
+  "capabilities": [
+    {
+      "id": "graph.object.query",
+      "domain": "semantic-graph",
+      "summary": "Query/traverse the content-addressed semantic object graph. There are NO file paths — objects are addressed by hash or namespace.",
+      "min_permission": "read",
+      "params": {
+        "selector": {"type": "string", "desc": "namespace pattern or object hash, e.g. /user/jayden/project/* or sha256:..."},
+        "view": {"type": "string", "enum": ["table", "graph", "spatial"], "desc": "rendering projection (Stage 9)"},
+        "depth": {"type": "integer", "default": 1}
+      },
+      "returns": "Vector<ObjectRef>"
+    },
+    {
+      "id": "graph.object.create",
+      "domain": "semantic-graph",
+      "summary": "Create a new immutable semantic object and link it into the graph. Returns its content hash.",
+      "min_permission": "write",
+      "params": {
+        "type": {"type": "string", "desc": "semantic object type, e.g. Invoice, Conversation, Project"},
+        "fields": {"type": "object"},
+        "links": {"type": "array", "items": "ObjectRef"}
+      },
+      "returns": "ObjectRef"
+    },
+    {
+      "id": "graph.object.version",
+      "domain": "semantic-graph",
+      "summary": "List the version lineage of an object (Git-like immutable history).",
+      "min_permission": "read",
+      "params": {"object": {"type": "ObjectRef"}},
+      "returns": "Vector<VersionRef>"
+    },
+    {
+      "id": "graph.state.rewind",
+      "domain": "determinism",
+      "summary": "Roll the system (or a subgraph) back to a prior hashable state. Deterministic replay (Stage 10/12).",
+      "min_permission": "admin",
+      "params": {
+        "target_state": {"type": "string", "desc": "state hash or relative time, e.g. 'before:edit#3'"},
+        "scope": {"type": "string", "default": "subgraph", "enum": ["subgraph", "system"]}
+      },
+      "returns": "StateRef"
+    },
+    {
+      "id": "compute.schedule",
+      "domain": "orchestration",
+      "summary": "Submit a Deterministic Compute Graph for heterogeneous scheduling. The OS picks CPU/GPU/NPU per node from data dependencies; hints are advisory.",
+      "min_permission": "write",
+      "params": {
+        "graph": {"type": "DCG", "desc": "compute graph of Dominion cells/functions"},
+        "hint": {"type": "object", "desc": "optional per-node device hints, e.g. {\"matmul\": \"GPU\", \"infer\": \"NPU\"}"}
+      },
+      "returns": "Resource<Result>"
+    },
+    {
+      "id": "compute.npu.infer",
+      "domain": "orchestration",
+      "summary": "Run a neural inference node on the NPU.",
+      "min_permission": "write",
+      "params": {"model": {"type": "ObjectRef"}, "input": {"type": "Latent"}},
+      "returns": "Latent"
+    },
+    {
+      "id": "codec.latent.encode",
+      "domain": "neural-codec",
+      "summary": "Encode an object into a compressed neural latent representation (Latent<T>), Stage 7 generative storage.",
+      "min_permission": "write",
+      "params": {"object": {"type": "ObjectRef"}},
+      "returns": "Latent"
+    },
+    {
+      "id": "codec.latent.decode",
+      "domain": "neural-codec",
+      "summary": "Decode a Latent<T> back to its object, using Grid-Snap deterministic dequantization.",
+      "min_permission": "read",
+      "params": {"latent": {"type": "Latent"}},
+      "returns": "ObjectRef"
+    },
+    {
+      "id": "net.interest.express",
+      "domain": "ndn",
+      "summary": "Express an NDN Interest for named data. Routes by data namespace, NOT by IP/host. Returns a signed Data packet.",
+      "min_permission": "read",
+      "params": {"name": {"type": "string", "desc": "hierarchical name, e.g. /user/jayden/workstation/syslog/v1"}},
+      "returns": "SignedData"
+    },
+    {
+      "id": "net.data.publish",
+      "domain": "ndn",
+      "summary": "Publish a producer-signed Data packet into a namespace owned by the caller's identity.",
+      "min_permission": "write",
+      "params": {"name": {"type": "string"}, "payload": {"type": "ObjectRef"}},
+      "returns": "SignedData"
+    },
+    {
+      "id": "identity.resolve",
+      "domain": "identity",
+      "summary": "Resolve a name to its HIBC public key / identity. The name itself acts as the key (no central CA).",
+      "min_permission": "observe",
+      "params": {"name": {"type": "string"}},
+      "returns": "Identity"
+    },
+    {
+      "id": "cap.derive",
+      "domain": "capability",
+      "summary": "Derive a NEW capability token from one the caller already holds. MUST be equal-or-lesser permission (monotonicity). Used to grant least-privilege access to a sub-task.",
+      "min_permission": "observe",
+      "params": {
+        "parent": {"type": "Capability"},
+        "attenuate_to": {"type": "string", "desc": "target permission, must be <= parent permission in the lattice"},
+        "bounds": {"type": "object", "desc": "optional tighter resource/namespace bounds"}
+      },
+      "returns": "Capability"
+    },
+    {
+      "id": "audio.semantic.tokenize",
+      "domain": "audio",
+      "summary": "Tokenize an audio stream into discrete semantic tokens (speech/alarm/environment), Stage 8.1.",
+      "min_permission": "read",
+      "params": {"stream": {"type": "AudioRef"}},
+      "returns": "Vector<SemanticToken>"
+    },
+    {
+      "id": "audio.object.render",
+      "domain": "audio",
+      "summary": "Render a sound as a positioned object in 3D space (Object-Based Audio / HRTF), Stage 8.2. Isochronous 16.6ms deadline.",
+      "min_permission": "write",
+      "params": {
+        "sound": {"type": "ObjectRef"},
+        "position": {"type": "object", "desc": "{x,y,z} plus orientation/directivity"}
+      },
+      "returns": "RenderHandle"
+    },
+    {
+      "id": "ui.view.render",
+      "domain": "ui",
+      "summary": "Render a semantic object using a dynamically-invoked view capability (Table/Graph/Spatial). No application is 'launched' — views are transient capability compositions (Stage 9).",
+      "min_permission": "read",
+      "params": {"object": {"type": "ObjectRef"}, "view": {"type": "string", "enum": ["table", "graph", "spatial", "document"]}},
+      "returns": "RenderHandle"
+    },
+    {
+      "id": "service.compose",
+      "domain": "orchestration",
+      "summary": "Assemble a transient composition of services/capabilities to fulfill a high-level intent (the 'analyze these numbers and make a presentation' pattern). Returns a workflow graph the agent can then schedule.",
+      "min_permission": "write",
+      "params": {
+        "intent": {"type": "string"},
+        "available_objects": {"type": "array", "items": "ObjectRef"},
+        "required_capabilities": {"type": "array", "items": "string", "desc": "capability ids to wire together"}
+      },
+      "returns": "DCG"
+    }
+  ]
+}

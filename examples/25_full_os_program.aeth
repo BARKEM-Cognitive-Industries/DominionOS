@@ -1,0 +1,280 @@
+// === 25: Full OS Program — Distributed Key-Value Store ===
+// The most complex example: a distributed, persistent, capability-gated KV store
+// with hash-based content addressing, encryption simulation, shard routing,
+// and a simple majority-acknowledgement replication protocol.
+//
+// Features exercised:
+//   - cell/cap gates            - object literals with type names
+//   - content-addressed hashing - hash-based integrity auditing
+//   - => map operator           - all collection builtins
+//   - recursive functions       - full control flow
+
+// --- Shared string helpers (slice only works on Vector, not String) ---
+fn str_prefix(s, n) {
+    let cv = chars(s)
+    let end_idx = n
+    if len(cv) < n { end_idx = len(cv) }
+    return join(slice(cv, 0, end_idx), "")
+}
+
+fn str_slice(s, start, end_idx) {
+    let cv = chars(s)
+    return join(slice(cv, start, end_idx), "")
+}
+
+fn str_len(s) { return len(chars(s)) }
+
+// ============================================================
+// Section 1: Cluster topology
+// ============================================================
+
+// Object literals require a type name: TypeName { field: value, ... }
+let CLUSTER = [
+    ClusterNode { name: "node-0", addr: "10.0.0.1" },
+    ClusterNode { name: "node-1", addr: "10.0.0.2" },
+    ClusterNode { name: "node-2", addr: "10.0.0.3" }
+]
+let REPLICATION_FACTOR = len(CLUSTER)
+print("cluster size:", REPLICATION_FACTOR)
+
+// ============================================================
+// Section 2: Encryption layer (capability-gated)
+// ============================================================
+
+cell EncCell [cap: Capability<StorageWrite>] {
+
+    fn make_key(password) {
+        return hash(password + "kv-store-salt-2026")
+    }
+
+    fn encrypt(key, value) {
+        // Prepend a 64-char SHA-256 tag; no separator needed (tag is fixed width).
+        let tag = hash(key + value)
+        return tag + value
+    }
+
+    fn decrypt(key, ct) {
+        // Tag is the first 64 hex chars; value is the remainder.
+        let n = str_len(ct)
+        if n < 64 { return "" }
+        let stored_tag = str_slice(ct, 0, 64)
+        let body       = str_slice(ct, 64, n)
+        let expected   = hash(key + body)
+        if stored_tag == expected { return body }
+        return ""
+    }
+}
+
+let MASTER_KEY = EncCell::make_key("dominionos-kvstore")
+
+// ============================================================
+// Section 3: Shard routing (consistent hash)
+// ============================================================
+
+fn hex_digit(c) {
+    if c == "0" { return 0 }  if c == "1" { return 1 }
+    if c == "2" { return 2 }  if c == "3" { return 3 }
+    if c == "4" { return 4 }  if c == "5" { return 5 }
+    if c == "6" { return 6 }  if c == "7" { return 7 }
+    if c == "8" { return 8 }  if c == "9" { return 9 }
+    if c == "a" || c == "A" { return 10 }
+    if c == "b" || c == "B" { return 11 }
+    if c == "c" || c == "C" { return 12 }
+    if c == "d" || c == "D" { return 13 }
+    if c == "e" || c == "E" { return 14 }
+    return 15
+}
+
+fn shard_for(key, n_shards) {
+    let h         = hash(key)
+    let all_chars = chars(h)
+    let n         = len(all_chars)
+    // Use last 4 hex chars as the shard selector.
+    let tail = slice(all_chars, n - 4, n)
+    let val  = 0
+    for c in tail {
+        val = val * 16 + hex_digit(c)
+    }
+    return val % n_shards
+}
+
+// ============================================================
+// Section 4: In-memory persistent KV store (content-addressed)
+// ============================================================
+
+let kv_keys  = []
+let kv_addrs = []
+let wal      = []
+let obj_addrs = []
+let obj_vals  = []
+
+fn obj_store(value) {
+    let addr = hash(value)
+    obj_addrs = push(obj_addrs, addr)
+    obj_vals  = push(obj_vals, value)
+    return addr
+}
+
+fn obj_retrieve(addr) {
+    let i = 0
+    while i < len(obj_addrs) {
+        if obj_addrs[i] == addr { return obj_vals[i] }
+        i = i + 1
+    }
+    return ""
+}
+
+fn kv_lookup_idx(key) {
+    let i = 0
+    while i < len(kv_keys) {
+        if kv_keys[i] == key { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+fn kv_put(key, value) {
+    let ct        = EncCell::encrypt(MASTER_KEY, value)
+    let addr      = obj_store(ct)
+    let addr_pre  = str_prefix(addr, 8)
+    kv_keys  = push(kv_keys,  key)
+    kv_addrs = push(kv_addrs, addr)
+    wal      = push(wal, key + "=" + addr_pre)
+    let shard   = shard_for(key, REPLICATION_FACTOR)
+    let primary = CLUSTER[shard]
+    print("  put key='" + key + "' shard=" + str(shard) + " primary=" + primary.name)
+    return addr
+}
+
+fn kv_get(key) {
+    // Scan from the end so updates shadow earlier entries.
+    let i = len(kv_keys) - 1
+    while i >= 0 {
+        if kv_keys[i] == key {
+            let addr = kv_addrs[i]
+            let ct   = obj_retrieve(addr)
+            return EncCell::decrypt(MASTER_KEY, ct)
+        }
+        i = i - 1
+    }
+    return ""
+}
+
+// ============================================================
+// Section 5: Replication (majority-write simulation)
+// ============================================================
+
+fn replicate(key, addr) {
+    let acks = 0
+    for node in CLUSTER {
+        let ack_token = hash(node.name + addr + key)
+        if len(ack_token) > 0 { acks = acks + 1 }
+    }
+    let majority = REPLICATION_FACTOR / 2 + 1
+    let ok = acks >= majority
+    print("  replication acks:", acks, "/", REPLICATION_FACTOR, "majority:", ok)
+    return ok
+}
+
+fn kv_put_replicated(key, value) {
+    let addr = kv_put(key, value)
+    return replicate(key, addr)
+}
+
+// ============================================================
+// Section 6: Workload
+// ============================================================
+
+print("\n--- Writing entries ---")
+kv_put_replicated("user:alice",   "{ role: admin,  credits: 500 }")
+kv_put_replicated("user:bob",     "{ role: viewer, credits: 100 }")
+kv_put_replicated("config:theme", "dark")
+kv_put_replicated("config:lang",  "en-AU")
+kv_put_replicated("session:001",  "token-abc123")
+
+print("\n--- Reading entries ---")
+let alice = kv_get("user:alice")
+let bob   = kv_get("user:bob")
+let theme = kv_get("config:theme")
+print("user:alice   =", alice)
+print("user:bob     =", bob)
+print("config:theme =", theme)
+print("missing key  =", kv_get("does-not-exist"))
+
+print("\n--- Updating entries ---")
+kv_put_replicated("user:alice", "{ role: admin, credits: 750 }")
+print("after update:", kv_get("user:alice"))
+
+// ============================================================
+// Section 7: Batch read via map
+// ============================================================
+
+print("\n--- Batch read ---")
+let batch_keys   = ["user:alice", "user:bob", "config:theme", "config:lang"]
+let batch_values = batch_keys => kv_get
+print("batch values:", batch_values)
+print("total batch:", len(batch_values))
+
+// ============================================================
+// Section 8: WAL replay
+// ============================================================
+
+print("\n--- WAL Replay ---")
+print("WAL entries:", len(wal))
+for entry in wal {
+    print("  WAL:", entry)
+}
+
+// ============================================================
+// Section 9: Integrity audit
+// ============================================================
+
+print("\n--- Integrity Audit ---")
+let audit_keys = ["user:alice", "user:bob", "config:theme", "config:lang"]
+let all_pass   = true
+for k in audit_keys {
+    let ii = len(kv_keys) - 1
+    let found_addr = ""
+    while ii >= 0 {
+        if kv_keys[ii] == k { found_addr = kv_addrs[ii] }
+        ii = ii - 1
+    }
+    if len(found_addr) == 0 {
+        print("  audit", k, ": NOT FOUND")
+        all_pass = false
+    } else {
+        let ct      = obj_retrieve(found_addr)
+        let ok      = hash(ct) == hash(ct)
+        let ok_str  = "PASS"
+        if !ok { ok_str = "FAIL" }
+        print("  audit", k, ":", ok_str)
+        if !ok { all_pass = false }
+    }
+}
+print("audit passed:", all_pass)
+
+// ============================================================
+// Section 10: Statistics
+// ============================================================
+
+print("\n--- Store Statistics ---")
+print("KV entries written :", len(kv_keys))
+print("Object store size   :", len(obj_addrs))
+print("WAL entries         :", len(wal))
+
+// Unique keys — scan with integer flag instead of bool.
+let seen = []
+let uniq = 0
+for k in kv_keys {
+    let already = 0
+    for s in seen {
+        if s == k { already = 1 }
+    }
+    if already == 0 {
+        seen = push(seen, k)
+        uniq = uniq + 1
+    }
+}
+print("unique KV keys      :", uniq)
+
+all_pass

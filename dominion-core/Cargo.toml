@@ -1,0 +1,35 @@
+[package]
+name = "dominion-core"
+version = "0.1.0"
+edition = "2021"
+description = "DominionOS core: capability model, semantic object graph, deterministic state machine, and the Dominion language."
+
+[lib]
+# Host-testable no_std library. With `cargo test` it links std (see cfg_attr in lib.rs)
+# so every component has fast native unit tests; inside the kernel it is pure no_std+alloc.
+
+[dependencies]
+
+[features]
+default = []
+# Opt-in hardware fused multiply-add for the matmul kernels. ~2× on multiply-bound
+# work, but a single fused rounding changes the low bits — so it is NON-deterministic
+# and OFF by default (the bit-exact, content-addressable model guarantee depends on it
+# being off). Requires a target with `+fma` (and AVX state enabled); the kernel pairs
+# it with `x86_64-dominion-fma.json` + AVX boot enablement. See docs/architecture/ml-compute.md.
+fma = []
+# Opt-in portable SIMD microkernel (nightly feature). Requires a nightly toolchain.
+# Uses core::simd f64x4 to explicitly vectorize the inner multiply-add loop — hoists
+# the B-panel loads outside the A-row loop so they stay in registers across rows.
+# Bit-identical to the scalar path when FMA is off; pairs naturally with fma for max throughput.
+simd = []
+# Enable the 31-bit illustrative Schnorr group (SchnorrParams::new_demo_insecure).
+# This group has no real security margin (discrete-log solvable in ~2^15 operations).
+# MUST NOT be enabled in production builds. Gate all demo/test ZK code behind this feature.
+# Production code must supply its own SchnorrParams built from a 256-bit safe-prime or
+# standard elliptic-curve group.
+demo-crypto = []
+# Enable the full unified 2D/3D render stack (22+ modules: Nanite, ATW, IDAG, HDR,
+# PSR2, SDF shadows, compositor service, etc.).  Off by default so non-graphical
+# kernel builds (headless nodes, CI unit tests) don't pay the compile cost.
+render-full = []

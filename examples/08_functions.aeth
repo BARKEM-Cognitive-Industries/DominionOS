@@ -1,0 +1,60 @@
+// === 08: Functions ===
+// Teaches: fn, params, return, multiple fns, recursion (factorial + fibonacci).
+
+// Basic function definition and call.
+fn greet(name) {
+    print("hello,", name)
+}
+greet("Dominion")
+
+// Function with a return value — explicit return.
+fn add(a, b) {
+    return a + b
+}
+print("3 + 4 =", add(3, 4))
+
+// The last expression in a function body is its implicit return value.
+fn square(x) {
+    x * x
+}
+print("7^2 =", square(7))
+
+// Multiple parameters, intermediate bindings.
+fn hypotenuse(a, b) {
+    let a2 = a * a
+    let b2 = b * b
+    sqrt(float(a2 + b2))
+}
+print("hyp(3,4) =", hypotenuse(3, 4))
+
+// Functions calling other functions.
+fn double(x) { return x * 2 }
+fn quad(x)   { return double(double(x)) }
+print("quad(5) =", quad(5))
+
+// Recursive factorial.
+fn factorial(n) {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+print("10! =", factorial(10))
+
+// Recursive Fibonacci.
+fn fib(n) {
+    if n <= 1 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+print("fib(10) =", fib(10))   // 55
+
+// Function using global bindings (visible inside fn body).
+let base = 1000
+fn add_base(x) {
+    return x + base
+}
+print("add_base(42) =", add_base(42))
+
+fib(10)

@@ -1,0 +1,47 @@
+// === 09: Pipes and Map ===
+// Teaches: |> pipeline operator, => parallel-map operator, data-flow style.
+
+// |> (pipe): feed the left value as the first argument of the right function.
+// This enables left-to-right data flow without nesting.
+let nums = [3, 1, 4, 1, 5, 9, 2, 6]
+
+// Without pipe: nested calls (inside-out reading).
+let sorted_nested = sort(nums)
+print("sorted:", sorted_nested)
+
+// With pipe: reads left to right, much cleaner.
+let sorted_piped = nums |> sort
+print("sorted via pipe:", sorted_piped)
+
+// Chaining multiple pipes.
+fn take5(xs) { return slice(xs, 0, 5) }
+let top5 = nums |> sort |> take5
+print("top 5 sorted:", top5)
+
+// Pipe with extra args: x |> f(a) means f(x, a).
+fn add_to_all(xs, amount) {
+    let result = []
+    for x in xs {
+        result = push(result, x + amount)
+    }
+    return result
+}
+let bumped = [1, 2, 3] |> add_to_all(10)
+print("bumped by 10:", bumped)
+
+// => (parallel-map): apply a function to every element of a vector.
+// xs => f   is equivalent to applying f to each element.
+fn double(x) { return x * 2 }
+let doubled = [1, 2, 3, 4, 5] => double
+print("doubled:", doubled)
+
+fn is_even(x) { return x % 2 == 0 }
+let evenness = [1, 2, 3, 4] => is_even
+print("is_even map:", evenness)
+
+// Combining pipe and map.
+fn negate(x) { return -x }
+let result = [1, 2, 3, 4, 5] => double |> sort
+print("doubled then sorted:", result)
+
+sum(doubled)

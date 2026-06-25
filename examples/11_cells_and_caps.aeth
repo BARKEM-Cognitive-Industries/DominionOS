@@ -1,0 +1,51 @@
+// === 11: Cells and Capabilities ===
+// Teaches: cell definitions, cap requirement, the capability model.
+
+// A `cell` is a capability-gated unit of modularity: hot-swappable and
+// restartable. The optional `[cap: Capability<X>]` clause declares the right
+// the scheduler must grant before the cell is allowed to run.
+
+// A cell without a capability requirement (runs in any domain).
+cell Counter {
+    fn increment(n) {
+        return n + 1
+    }
+    fn reset() {
+        return 0
+    }
+}
+
+// A cell that requires StorageRead capability.
+// When this cell is instantiated by the scheduler, it receives a token
+// proving the StorageRead right — a hostile program cannot fake that token.
+cell DataReader [cap: Capability<StorageRead>] {
+    fn load_count(name) {
+        // In a real system this would check the cap token and call into the
+        // object store. Here we demonstrate the syntax; the interpreter
+        // evaluates the capability requirement before dispatching.
+        return len(name)   // stand-in for an actual read
+    }
+}
+
+// A cell with StorageWrite capability.
+cell DataWriter [cap: Capability<StorageWrite>] {
+    fn write_value(key, val) {
+        // Real: persist val under key.  Here: return a confirmation string.
+        return key + ": ok"
+    }
+}
+
+// Using cells: call their methods via the :: path syntax.
+let count = Counter::increment(0)
+print("count after increment:", count)
+
+let reset_val = Counter::reset()
+print("count after reset:", reset_val)
+
+let key_len = DataReader::load_count("my_dataset")
+print("name length:", key_len)
+
+let confirm = DataWriter::write_value("result", 42)
+print("write result:", confirm)
+
+count

@@ -1,0 +1,74 @@
+// === 23: Advanced ML — Neural Net Training ===
+// Teaches: mlp/train_xor/predict/nn_loss, tensor matmul, hypervectors, @CPU/@GPU.
+// Note: predict() returns a Tensor; use nn_loss(model) for a scalar progress metric.
+
+// --- Build a 2-hidden-layer MLP for XOR ---
+// mlp([in, h1, h2, out]) with tanh hidden layers and sigmoid output.
+let model = mlp([2, 16, 8, 1])
+print("architecture: [2, 16, 8, 1]")
+print("untrained loss:", nn_loss(model))
+
+// --- Progressive training ---
+// train_xor(model, epochs) runs MSE gradient-descent on the XOR dataset.
+// Returns a new trained model; original is unchanged (functional update).
+let m1 = train_xor(model, 200)
+print("after  200 epochs — loss:", nn_loss(m1))
+
+let m2 = train_xor(m1, 300)
+print("after  500 epochs — loss:", nn_loss(m2))
+
+let m3 = train_xor(m2, 500)
+print("after 1000 epochs — loss:", nn_loss(m3))
+
+// --- Final XOR predictions ---
+// predict(model, tensor) does a forward pass and returns a Tensor.
+print("\nFinal XOR predictions:")
+let x00 = tensor(1, 2, [0, 0]);  let p00 = predict(m3, x00)
+let x01 = tensor(1, 2, [0, 1]);  let p01 = predict(m3, x01)
+let x10 = tensor(1, 2, [1, 0]);  let p10 = predict(m3, x10)
+let x11 = tensor(1, 2, [1, 1]);  let p11 = predict(m3, x11)
+print("  [0,0] →", p00, "(want ≈0)")
+print("  [0,1] →", p01, "(want ≈1)")
+print("  [1,0] →", p10, "(want ≈1)")
+print("  [1,1] →", p11, "(want ≈0)")
+
+// --- @CPU placement decorator ---
+@CPU
+fn cpu_xor_loss(m) {
+    return nn_loss(m)
+}
+
+print("\ncpu_xor_loss (m3):", cpu_xor_loss(m3))
+
+// --- @GPU: matrix multiply is accelerated on the GPU scheduler ---
+@GPU
+fn benchmark_matmul(n) {
+    let size = n * n
+    let data = []
+    let i = 0
+    while i < size { data = push(data, float(i + 1)); i = i + 1 }
+    let A = tensor(n, n, data)
+    let B = tensor(n, n, data)
+    return matmul(A, B)
+}
+let result_2x2 = benchmark_matmul(2)
+print("\n2×2 matmul:", result_2x2)
+
+// --- Hyperdimensional computing ---
+// Bind language names to create an associative memory.
+let hv_en     = hypervector(256, "english")
+let hv_fr     = hypervector(256, "french")
+let hv_de     = hypervector(256, "german")
+let lang_pair = bind(hv_en, hv_fr)
+print("\nHD language association (en↔fr):", lang_pair)
+
+// Multiple-pass loss progression.
+let losses = [nn_loss(model), nn_loss(m1), nn_loss(m2), nn_loss(m3)]
+print("loss progression:", losses)
+
+// Route values to hardware compute units.
+route(result_2x2)   // → GPU
+route(lang_pair)    // → NPU
+route(m3)           // → GPU/TPU
+
+nn_loss(m3)

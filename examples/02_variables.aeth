@@ -1,0 +1,25 @@
+// === 02: Variables and bindings ===
+// Teaches: `let` (re-readable), `=` reassignment, and `linear` (use-once) values.
+
+// `let` introduces a normal, read-many binding.
+let x = 10
+print("x =", x)
+
+// Reassign an existing binding with `=` (the name must already be `let`-bound).
+x = x + 5
+print("x is now", x)
+
+// Bindings can hold any value type.
+let name = "Ada"
+let pi = 3.14159
+let ok = true
+print(name, pi, ok)
+
+// `linear` declares an AFFINE (use-once) value: reading it MOVES it.
+// A second read of the same linear binding would be a use-after-move fault,
+// so we read it exactly once here.
+linear ticket = "single-use-token"
+print("consumed:", ticket)   // first and only read — moves the value out
+
+// The last expression is the program result.
+x

@@ -1,0 +1,58 @@
+// === 07: Loops ===
+// Teaches: while, for-in, range, break, continue.
+
+// while: repeat while condition is true.
+let i = 0
+let total = 0
+while i < 5 {
+    total = total + i
+    i = i + 1
+}
+print("while sum 0..4 =", total)   // 0+1+2+3+4 = 10
+
+// for-in with range: the idiomatic counted loop.
+let s = 0
+for n in range(10) {
+    s = s + n
+}
+print("sum 0..9 =", s)   // 45
+
+// for-in over a vector literal.
+let words = ["cat", "dog", "fish"]
+for word in words {
+    print(word)
+}
+
+// break: exit the loop early.
+let found = 0
+for n in range(100) {
+    if n * n > 50 {
+        found = n
+        break
+    }
+}
+print("first n where n^2 > 50 =", found)   // 8
+
+// continue: skip the rest of this iteration.
+let evens = 0
+for n in range(10) {
+    if n % 2 != 0 {
+        continue
+    }
+    evens = evens + n
+}
+print("sum of even numbers 0..9 =", evens)   // 0+2+4+6+8 = 20
+
+// Nested loops with early exit from the inner.
+let pairs = 0
+for a in range(4) {
+    for b in range(4) {
+        if b == 2 {
+            break   // only breaks inner loop
+        }
+        pairs = pairs + 1
+    }
+}
+print("pairs (a in 0..3, b in 0..1) =", pairs)   // 4*2 = 8
+
+pairs

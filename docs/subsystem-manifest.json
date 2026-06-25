@@ -1,0 +1,290 @@
+{
+  "consolidation_date": "2026-06-22",
+  "consolidation_method": "Multi-agent workflow: manifest creation + Pass 1 analysis (SPECIFIED/IMPLEMENTED/GAPS for 12 subsystems) + Pass 2 synthesis",
+  "subsystems": [
+    {
+      "id": "kernel-core",
+      "name": "Microkernel & Core Execution",
+      "description": "Hardware abstraction, architectural primitives, boot, low-level kernel functionality. Includes formally-verified microkernel (Stage 1), firmware/secure boot (Stage 0), and core CPU/SMP/memory management.",
+      "modules": ["arch", "capability", "capshim", "cheri", "elf", "enclave", "supervisor", "world"],
+      "spec_files": [
+        "docs/_archive_2/architecture/00-overview.md",
+        "docs/_archive_2/architecture/01-stage-00-firmware-boot.md",
+        "docs/_archive_2/architecture/02-stage-01-microkernel.md",
+        "docs/_archive_2/architecture/03-stage-02-capability-security.md"
+      ],
+      "key_source_files": ["dominion-core/src/arch.rs", "dominion-core/src/capability.rs", "dominion-core/src/cheri.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": ["Formal verification proofs", "Measured boot/PCR chain", "WCET bounds", "TCB size attestation"],
+      "spec_alignment": "80%"
+    },
+    {
+      "id": "scheduling-multikernel",
+      "name": "Scheduling & Multikernel",
+      "description": "Process/domain scheduling, multikernel coordination, SMP/AP bring-up, thread pools, heterogeneous scheduling (GPUs/NPUs/cores). Stage 4 multikernel + cooperative scheduling + resource governors.",
+      "modules": ["sched", "multikernel", "pool", "parallel", "governor", "placement", "workload"],
+      "spec_files": [
+        "docs/_archive_2/architecture/05-stage-04-multikernel-scheduling.md",
+        "docs/_archive_2/architecture/resource-governor.md",
+        "docs/_archive_2/implementation/cross-platform-targets-and-builds.md"
+      ],
+      "key_source_files": ["dominion-core/src/sched.rs", "dominion-core/src/pool.rs", "dominion-core/src/governor.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": [],
+      "spec_alignment": "95%"
+    },
+    {
+      "id": "memory-storage",
+      "name": "Memory, Storage & Persistence",
+      "description": "Physical/virtual memory management, disk I/O (virtio), persistence layer, content-addressed object store, deduplication, memory encryption at rest. Stage 5 (Generative Storage), Stage 6 (provenance).",
+      "modules": ["filesystem", "files", "persist", "objstore", "content_store", "memenc", "memcrypt", "ramdedup", "hardalloc", "percorealloc", "vfs", "durability", "recovery", "journal"],
+      "spec_files": [
+        "docs/_archive_2/architecture/06-stage-05-generative-storage.md",
+        "docs/_archive_2/architecture/07-stage-06-active-defense-provenance.md",
+        "docs/_archive_2/security/memory-encryption-at-rest.md",
+        "docs/_archive_2/implementation/persistence-and-crash-consistency.md"
+      ],
+      "key_source_files": ["dominion-core/src/filesystem.rs", "dominion-core/src/persist.rs", "dominion-core/src/objstore.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": ["Generative neural codecs", "Two-Pass Band-Pass routing", "Kernel-level RL optimization", "SLIC active defense", "Hardware memory encryption wiring"],
+      "spec_alignment": "60%"
+    },
+    {
+      "id": "security-crypto",
+      "name": "Security & Cryptography",
+      "description": "Cryptographic primitives (ChaCha20, AES-GCM, PQ), key management, zero-knowledge proofs, secure time, entropy/randomness, cryptographic attestation. Stages 11/13/14 (kernel hardening, post-quantum, universal encryption).",
+      "modules": ["crypto", "cryptoct", "chacha", "x509", "tls", "tlscrypto", "tokensig", "vault", "keys", "zk", "random", "time", "attest"],
+      "spec_files": [
+        "docs/_archive_2/security/threat-model-and-security-posture.md",
+        "docs/_archive_2/security/memory-encryption-at-rest.md",
+        "docs/_archive_2/security/secure-time.md",
+        "docs/_archive_2/security/stage-13-post-quantum-crypto.md",
+        "docs/_archive_2/security/stage-14-universal-encryption.md",
+        "docs/_archive_2/security/zero-knowledge-proofs.md"
+      ],
+      "key_source_files": ["dominion-core/src/crypto.rs", "dominion-core/src/chacha.rs", "dominion-core/src/zk.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": ["Anti-rollback hardware counter", "Constant-time AES-GCM verification", "Production ML-KEM/ML-DSA integration", "Tier A/B hardware integration"],
+      "spec_alignment": "85%"
+    },
+    {
+      "id": "access-control-hardening",
+      "name": "Access Control & Hardening",
+      "description": "Capability-based security, isolation enforcement, firewall, airlock, runtime attestation, coercion resistance. Stage 2 (capability security), Stage 11 subsections on firewall/airlock.",
+      "modules": ["secprofile", "secnode", "firewall", "airlock", "enforcement", "threat", "compliance", "defense", "deniable", "amnesic", "confidential", "privacy", "sandbox"],
+      "spec_files": [
+        "docs/_archive_2/security/stage-11-kernel-hardening.md",
+        "docs/_archive_2/security/deniable-storage-and-coercion-resistance.md",
+        "docs/_archive_2/security/amnesic-mode-and-anti-forensics.md",
+        "docs/_archive_2/security/anti-fingerprinting-and-private-browsing.md",
+        "docs/_archive_2/security/system-domain-and-internal-confidentiality.md"
+      ],
+      "key_source_files": ["dominion-core/src/secprofile.rs", "dominion-core/src/firewall.rs", "dominion-core/src/amnesic.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": ["Formal verification proofs (firewall/airlock)", "AI-assisted ML threat detection", "Distributed firewall (single-node only)", "Cross-node peer validation"],
+      "spec_alignment": "90%"
+    },
+    {
+      "id": "networking-comms",
+      "name": "Networking & Communications",
+      "description": "Physical/logical networking, NDN (Named Data Networking), mesh networking, webauth, transport protocols, DominionLink (self-certifying IDs + DHT). Stage 7 (Identity-based networking).",
+      "modules": ["net", "net_bench", "ndn", "mesh", "transport", "dominionlink", "dominionweb", "webauth", "legacynet", "pubsub", "consistency", "hlc"],
+      "spec_files": [
+        "docs/_archive_2/architecture/08-stage-07-named-data-networking.md",
+        "docs/_archive_2/architecture/web-identity-and-authentication.md",
+        "docs/_archive_2/architecture/reactive-subscription-plane.md",
+        "docs/_archive_2/DominionOS Network Architecture Spec update-improvement.md",
+        "docs/_archive_2/EtherLink-11-Lever-Network-Superiority-Framework.md"
+      ],
+      "key_source_files": ["dominion-core/src/net.rs", "dominion-core/src/ndn.rs", "dominion-core/src/dominionlink.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": [],
+      "spec_alignment": "95%"
+    },
+    {
+      "id": "language-runtime",
+      "name": "Language & Runtime (Dominion)",
+      "description": "Dominion language (lexer, parser, interpreter), safe-language semantics, object-centric data model, capability-gated cells, heterogeneous execution (@CPU/@GPU/@NPU). Stage 3 (Intralingual SASOS).",
+      "modules": ["datatypes", "dom", "foreign", "foreignload", "polyglot", "wasm", "compat", "lsp", "ide"],
+      "spec_files": [
+        "docs/_archive_2/architecture/04-stage-03-intralingual-sasos.md",
+        "docs/_archive_2/language/dominion-language-spec.md",
+        "docs/_archive_2/language/dominion-data-types.md",
+        "docs/_archive_2/language/multi-language-and-runtimes.md"
+      ],
+      "key_source_files": ["dominion-core/src/datatypes.rs", "dominion-core/src/dom.rs", "dominion-core/src/wasm.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": [],
+      "spec_alignment": "95%"
+    },
+    {
+      "id": "browser-web",
+      "name": "Browser & Web Stack",
+      "description": "Universal browser, web engine, HTTP stack, HTML/CSS/JS rendering, DOM, URL parsing. Implements browser as a first-class runtime with Tor support.",
+      "modules": ["browser", "browserapp", "webengine", "http", "html", "css", "js", "url", "dom"],
+      "spec_files": [
+        "docs/_archive_2/ui/universal-browser.md",
+        "docs/_archive_2/ui/rendering-and-toolkit.md",
+        "docs/_archive_2/architecture/web-identity-and-authentication.md"
+      ],
+      "key_source_files": ["dominion-core/src/browser.rs", "dominion-core/src/webengine.rs", "dominion-core/src/http.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": ["Terminal input routing to shell", "Tor SOCKS proxy kernel integration", "Real HTTP transport kernel layer"],
+      "spec_alignment": "90%"
+    },
+    {
+      "id": "rendering-ui",
+      "name": "Rendering & Graphics",
+      "description": "Unified 2D/3D rendering stack, Nanite (virtual geometry), adaptive texture warping (ATW), HDR, Priority Rotation (PSR2), immediate DAG (IDAG), text engine, vector paths, font rasterization. Stage 8/9.",
+      "modules": ["render3d", "nanite", "atw", "hdr", "psr2", "idag", "raster3d", "scene3d", "surface", "text", "fontgpu", "vectorpath", "vertanim", "sdf_shadow", "render_bench", "render_determinism", "render_provenance"],
+      "spec_files": [
+        "docs/_archive_2/2d-3d rendering redesign.md",
+        "docs/_archive_2/ui/rendering-and-toolkit.md",
+        "docs/_archive_2/ui/text-engine.md"
+      ],
+      "key_source_files": ["dominion-core/src/render3d.rs", "dominion-core/src/nanite.rs", "dominion-core/src/text.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": [],
+      "spec_alignment": "95%"
+    },
+    {
+      "id": "desktop-shell",
+      "name": "Desktop, Shell & Workspace",
+      "description": "Windows-like desktop environment, shell (command-line REPL), window manager, z-order compositor, taskbar, workspace, widgets, design system, composable UI. Stage 9 (object-centric AI-native interaction).",
+      "modules": ["ui", "desktop_page", "shell", "shellcmd", "terminal", "termpage", "explorer", "editor", "editorpage", "window", "workspace", "widgets", "toolkit", "compose", "dashboard", "dash", "compositor_svc"],
+      "spec_files": [
+        "docs/_archive_2/ui/desktop-and-shell.md",
+        "docs/_archive_2/ui/terminal.md",
+        "docs/_archive_2/ui/explorer.md",
+        "docs/_archive_2/ui/ide.md",
+        "docs/_archive_2/ui/live-dashboard.md",
+        "docs/_archive_2/ui/composable-ui.md",
+        "docs/_archive_2/ui/design-system-and-shell.md"
+      ],
+      "key_source_files": ["dominion-core/src/shell.rs", "dominion-core/src/terminal.rs", "dominion-core/src/ui.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": ["Terminal input routing", "Shell/workspace architecture fragmentation", "Composable UI incomplete (widgets not on all pages)", "Live kernel enumeration (demo data only)"],
+      "spec_alignment": "85%"
+    },
+    {
+      "id": "ml-ai-compute",
+      "name": "ML/AI & Accelerated Compute",
+      "description": "Neural networks, ML inference, on-device AI, generative storage with RL-based tiering, vcompute (virtual compute), model quantization, sampler, BPE tokenizer. Stage 5 (generative storage) + Stage 9.",
+      "modules": ["ml", "agent", "neural", "vcompute", "coldcomp", "dcg", "prefetch", "pressure", "memo"],
+      "spec_files": [
+        "docs/_archive_2/architecture/ml-compute.md",
+        "docs/_archive_2/architecture/ml-acceleration-roadmap.md",
+        "docs/_archive_2/ai/ON_DEVICE_AI_SPEC.md",
+        "docs/_archive_2/ai/BENCHMARKS.md",
+        "docs/_archive_2/ai/PIPELINE_STATUS.md",
+        "docs/_archive_2/architecture/memory-acceleration-roadmap.md"
+      ],
+      "key_source_files": ["dominion-core/src/ml.rs", "dominion-core/src/agent.rs", "dominion-core/src/neural.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": ["Generative compression neural codecs", "RL-based prefetch/cache optimization", "AI threat detection ML models"],
+      "spec_alignment": "75%"
+    },
+    {
+      "id": "device-driver",
+      "name": "Device & Driver Management",
+      "description": "Hardware abstraction layer, device discovery, driver synthesis/generation, VGA framebuffer, PS/2, virtio, PCI enumeration.",
+      "modules": ["driver", "drivergen", "discovery", "elf"],
+      "spec_files": [
+        "docs/_archive_2/architecture/driver-synthesis-and-device-model.md",
+        "docs/_archive_2/implementation/hardware-targets-and-portability.md"
+      ],
+      "key_source_files": ["dominion-core/src/driver.rs", "dominion-core/src/discovery.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": ["DST replay-validation", "L2 real bus parsing (PCI/USB/ACPI/DT)", "L4 binary parsing for foreign drivers", "L5 AI-drafted driver admission", "Conformance gate (90% coverage)"],
+      "spec_alignment": "70%"
+    },
+    {
+      "id": "audio-media",
+      "name": "Audio & Media",
+      "description": "Semantic audio processing, media service, codec registry, media streaming. Stage 8 (semantic audio).",
+      "modules": ["audio", "media_service", "codec"],
+      "spec_files": [
+        "docs/_archive_2/architecture/09-stage-08-semantic-audio.md"
+      ],
+      "key_source_files": ["dominion-core/src/audio.rs", "dominion-core/src/codec.rs"],
+      "status": "PROPOSED",
+      "critical_gaps": [],
+      "spec_alignment": "75%"
+    },
+    {
+      "id": "distributed-compute",
+      "name": "Distributed Compute & Economics",
+      "description": "Byzantine Fault Tolerant (BFT) consensus, distributed SASOS (DSASOS), compute marketplace, settlement, proof-of-useful-work, fleet coordination.",
+      "modules": ["bft", "consensus", "dsasos", "marketplace", "settlement", "economy", "fleetsync", "fleet"],
+      "spec_files": [
+        "docs/_archive_2/architecture/distributed-sasos-and-global-address-space.md",
+        "docs/_archive_2/architecture/decentralized-compute-marketplace.md",
+        "docs/_archive_2/economics/compute-backed-settlement-and-proof-of-useful-work.md",
+        "docs/_archive_2/implementation/backup-sync-and-device-fleet.md"
+      ],
+      "key_source_files": ["dominion-core/src/bft.rs", "dominion-core/src/dsasos.rs", "dominion-core/src/marketplace.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": [],
+      "spec_alignment": "90%"
+    },
+    {
+      "id": "verification-integrity",
+      "name": "Verification, Integrity & Provenance",
+      "description": "Cryptographic provenance, deterministic state machines (Stage 10), kernel verification + WCET, runtime monitoring, attestation, audit trails, deterministic rendering.",
+      "modules": ["verify", "state", "consistency", "hlc", "rdg", "rot", "instances"],
+      "spec_files": [
+        "docs/_archive_2/architecture/11-stage-10-deterministic-state.md",
+        "docs/_archive_2/architecture/07-stage-06-active-defense-provenance.md",
+        "docs/_archive_2/security/hardware-root-of-trust-and-attestation.md"
+      ],
+      "key_source_files": ["dominion-core/src/verify.rs", "dominion-core/src/state.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": [],
+      "spec_alignment": "95%"
+    },
+    {
+      "id": "system-services",
+      "name": "System Services & Lifecycle",
+      "description": "Task management, session/lifecycle management, update/upgrade, system-wide settings, identity management, compliance, data lifecycle, backup/restore.",
+      "modules": ["taskman", "session", "lifecycle", "settings", "update", "identity", "recovery", "credential", "rollout", "supplychain", "compliance", "consent"],
+      "spec_files": [
+        "docs/_archive_2/implementation/update-and-upgrade-lifecycle.md",
+        "docs/_archive_2/security/data-lifecycle-and-compliance.md",
+        "docs/_archive_2/security/identity-recovery-and-key-management.md",
+        "docs/_archive_2/implementation/backup-sync-and-device-fleet.md"
+      ],
+      "key_source_files": ["dominion-core/src/taskman.rs", "dominion-core/src/session.rs", "dominion-core/src/update.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": [],
+      "spec_alignment": "95%"
+    },
+    {
+      "id": "accessibility-localization",
+      "name": "Accessibility, Localization & UX",
+      "description": "Accessibility (WCAG), internationalization (i18n), user preferences, inclusive design.",
+      "modules": ["a11y", "i18n", "wcag", "highlights", "props"],
+      "spec_files": [
+        "docs/_archive_2/architecture/accessibility-and-i18n.md"
+      ],
+      "key_source_files": ["dominion-core/src/a11y.rs", "dominion-core/src/i18n.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": [],
+      "spec_alignment": "90%"
+    },
+    {
+      "id": "utilities-testing",
+      "name": "Utilities, Testing & Debug",
+      "description": "Logging, time/clock, math/numerics, bytes/encoding, testing kit, fuzzing, benchmarking, bytecode/IL.",
+      "modules": ["logger", "testkit", "fuzz", "bytes", "hash", "numerics", "math", "math3d", "random", "time", "zerocopy", "dst", "memo", "zcpring", "object", "ctx", "appkit"],
+      "spec_files": [
+        "docs/_archive_2/implementation/testing-and-verification-strategy.md"
+      ],
+      "key_source_files": ["dominion-core/src/testkit.rs", "dominion-core/src/logger.rs"],
+      "status": "SHIPPED",
+      "critical_gaps": [],
+      "spec_alignment": "95%"
+    }
+  ],
+  "overall_alignment": "85%",
+  "note": "This manifest maps 17 subsystems to their spec files (from _archive_2) and source modules. Each subsystem has been analyzed in Pass 1: SPECIFIED (intent), IMPLEMENTED (reality), GAPS (missing). See architecture.md for synthesis and next-phase recommendations."
+}

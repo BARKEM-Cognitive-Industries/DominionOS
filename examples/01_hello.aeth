@@ -1,0 +1,18 @@
+// === 01: Hello, Dominion ===
+// Teaches: literals and the `print` builtin — the smallest runnable program.
+
+// `print` joins its arguments with spaces and writes one line to stdout.
+print("Hello, Dominion!")
+
+// Every kind of primitive literal the language understands:
+print(42)        // an Int
+print(3.14)      // a Float
+print(true)      // a Bool
+print("text")    // a Str
+
+// print can take several arguments at once.
+print("the answer is", 42)
+
+// The value of the LAST statement is the program's result (the REPL value).
+// Here it is Unit (), because `print` returns nothing.
+print("done")

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="340" font-family="monospace,sans-serif">
+  <rect width="720" height="340" fill="#0d1117"/>
+  <text x="360" y="34" text-anchor="middle" fill="#e6edf3" font-size="16" font-weight="bold">Cryptography throughput (MiB/s, 4 KiB payloads)</text>
+  <text x="360" y="54" text-anchor="middle" fill="#8b949e" font-size="12">Software only — no AES-NI, no hardware offload</text>
+
+  <!-- bars: max 200 MiB/s = 500px -->
+  <!-- Plaintext 197 = 492px -->
+  <!-- ChaCha20 123 = 307px -->
+  <!-- AES-GCM 72 = 180px -->
+
+  <text x="195" y="113" text-anchor="end" fill="#8b949e" font-size="12">Plaintext copy</text>
+  <rect x="200" y="88" width="500" height="44" rx="4" fill="#21262d"/>
+  <rect x="200" y="88" width="492" height="44" rx="4" fill="#238636"/>
+  <text x="360" y="116" text-anchor="middle" fill="#fff" font-size="13" font-weight="bold">197 MiB/s</text>
+
+  <text x="195" y="193" text-anchor="end" fill="#8b949e" font-size="12">ChaCha20-Poly1305</text>
+  <rect x="200" y="168" width="500" height="44" rx="4" fill="#21262d"/>
+  <rect x="200" y="168" width="307" height="44" rx="4" fill="#1f6feb"/>
+  <text x="360" y="196" text-anchor="middle" fill="#fff" font-size="13" font-weight="bold">123 MiB/s (default)</text>
+
+  <text x="195" y="273" text-anchor="end" fill="#8b949e" font-size="12">AES-256-GCM</text>
+  <rect x="200" y="248" width="500" height="44" rx="4" fill="#21262d"/>
+  <rect x="200" y="248" width="180" height="44" rx="4" fill="#9e6a03"/>
+  <text x="296" y="276" text-anchor="middle" fill="#fff" font-size="13" font-weight="bold">72 MiB/s</text>
+
+  <text x="360" y="318" text-anchor="middle" fill="#58a6ff" font-size="11">ChaCha20-Poly1305 is the vault default. AES-NI support would close the gap to plaintext.</text>
+</svg>

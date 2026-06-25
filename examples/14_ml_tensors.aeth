@@ -1,0 +1,62 @@
+// === 14: Machine Learning — Tensors, MLP, Training ===
+// Teaches: tensor, matmul, mlp, predict, train_xor, nn_loss, hypervector, bind.
+
+// ── Tensors: dense N-D numeric arrays ──
+// tensor(rows, cols, data) constructs a tensor; data is a flat vector of floats.
+let t1 = tensor(2, 3, [1, 2, 3, 4, 5, 6])    // 2×3
+let t2 = tensor(3, 2, [7, 8, 9, 10, 11, 12])  // 3×2
+print("t1 shape [2,3]:", t1)
+print("t2 shape [3,2]:", t2)
+
+// Matrix multiply: (2×3) × (3×2) → (2×2).
+let product = matmul(t1, t2)
+print("matmul result (2×2):", product)
+
+// ── MLP: a trainable multilayer perceptron ──
+// mlp([in, hidden..., out]) creates a network; layer sizes are positive Ints.
+let net = mlp([2, 8, 4, 1])
+print("network created:", net)
+
+// predict(model, tensor) — forward pass, returns output Tensor.
+let x    = tensor(1, 2, [0, 1])   // one input: [0, 1] (XOR true case)
+let pred = predict(net, x)
+print("prediction (untrained):", pred)
+
+// ── train_xor: trains a 2→…→1 network on the XOR task ──
+// Trains for epochs gradient-descent steps and returns the trained Model.
+let trained = train_xor(net, 500)
+print("trained network:", trained)
+
+// Verify predictions after training.
+let x00 = tensor(1, 2, [0, 0]);  let y00 = predict(trained, x00)
+let x01 = tensor(1, 2, [0, 1]);  let y01 = predict(trained, x01)
+let x10 = tensor(1, 2, [1, 0]);  let y10 = predict(trained, x10)
+let x11 = tensor(1, 2, [1, 1]);  let y11 = predict(trained, x11)
+print("XOR predictions after training:")
+print("  [0,0] →", y00, " (want ≈0)")
+print("  [0,1] →", y01, " (want ≈1)")
+print("  [1,0] →", y10, " (want ≈1)")
+print("  [1,1] →", y11, " (want ≈0)")
+
+// nn_loss: the trained model's MSE on the XOR task.
+let loss_before = nn_loss(net)
+let loss_after  = nn_loss(trained)
+print("loss before training:", loss_before)
+print("loss after training:", loss_after)
+
+// ── Hypervectors: high-dimensional computing (HDC) ──
+// hypervector(dim, seed) creates a random binary HD vector seeded by the string.
+let hv1 = hypervector(1024, "concept_A")
+let hv2 = hypervector(1024, "concept_B")
+print("hv1:", hv1)
+
+// bind: XOR-based binding (associative memory, reversible).
+let bound = bind(hv1, hv2)
+print("bound hypervector:", bound)
+
+// The route builtin records hardware placement decisions.
+route(t1)       // → GPU (Tensor)
+route(hv1)      // → NPU (HyperVector)
+route(trained)  // → GPU/TPU (Model)
+
+loss_after

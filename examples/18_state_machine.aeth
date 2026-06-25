@@ -1,0 +1,81 @@
+// === 18: State Machine (Complex) ===
+// Teaches: modeling state with fns + vectors + loops; complex control flow.
+
+// A traffic-light state machine modelled entirely in Dominion.
+// States: 0=Red, 1=Green, 2=Yellow.
+// Transitions: Red→Green, Green→Yellow, Yellow→Red.
+
+fn state_name(s) {
+    if s == 0 { return "Red" }
+    if s == 1 { return "Green" }
+    return "Yellow"
+}
+
+fn transition(s) {
+    if s == 0 { return 1 }   // Red → Green
+    if s == 1 { return 2 }   // Green → Yellow
+    return 0                  // Yellow → Red
+}
+
+fn should_stop(s) {
+    return s == 0   // stop on Red
+}
+
+// Run the state machine for N ticks and record the history.
+fn run_machine(initial, ticks) {
+    let state = initial
+    let history = [state_name(state)]
+    let i = 0
+    while i < ticks {
+        state = transition(state)
+        history = push(history, state_name(state))
+        i = i + 1
+    }
+    return history
+}
+
+let history = run_machine(0, 6)
+print("traffic light history:", history)
+
+// A more general finite-state machine.
+// States as ints; transitions as a vector of [from, to] pairs; we look them up.
+fn find_transition(table, from_state) {
+    for row in table {
+        if row[0] == from_state {
+            return row[1]
+        }
+    }
+    return -1   // no transition found
+}
+
+// Vending machine: 0=idle, 1=coin_inserted, 2=dispensing, 3=done.
+let vending_transitions = [
+    [0, 1],   // idle → coin_inserted
+    [1, 2],   // coin_inserted → dispensing
+    [2, 3],   // dispensing → done
+    [3, 0]    // done → idle
+]
+
+fn run_vending(steps) {
+    let s = 0
+    let log = []
+    for _ in range(steps) {
+        let next = find_transition(vending_transitions, s)
+        if next == -1 { break }
+        s = next
+        log = push(log, s)
+    }
+    return log
+}
+
+let vlog = run_vending(5)
+print("vending states:", vlog)
+
+// Count how many times we revisit idle (state 0).
+let idle_count = 0
+for s in vlog {
+    if s == 0 { idle_count = idle_count + 1 }
+}
+print("times returned to idle:", idle_count)
+
+len(history)

@@ -1,0 +1,61 @@
+// === 17: Data Pipeline (Complex) ===
+// Teaches: composing load, pipe, summarise, map, filter via fns, real pipeline.
+
+// `load(name)` fetches a named dataset from the object store (or the demo
+// store the interpreter seeds with "alpha" → a sample dataset).
+let raw = load("alpha")
+print("loaded dataset:", raw)
+
+// Summarise the dataset — returns aggregate statistics.
+let stats = raw |> summarise
+print("stats:", stats)
+
+// Build a processing pipeline step by step.
+fn normalize(xs) {
+    // Divide every element by the max to get values in [0, 1].
+    let m = max(sum(xs), 1)   // avoid div-by-zero; use sum as a proxy for max
+    let result = []
+    for x in xs {
+        result = push(result, float(x) / float(m))
+    }
+    return result
+}
+
+fn clip(xs) {
+    // Clip each element to [0.0, 1.0].
+    let result = []
+    for x in xs {
+        let v = x
+        if float(v) < 0.0 { v = 0.0 }
+        if float(v) > 1.0 { v = 1.0 }
+        result = push(result, v)
+    }
+    return result
+}
+
+fn threshold_filter(xs) {
+    // Keep only elements > 0.1.
+    let result = []
+    for x in xs {
+        if x > 0.1 {
+            result = push(result, x)
+        }
+    }
+    return result
+}
+
+// Compose the pipeline with |>.
+let processed = [10, 25, 0, 50, 75, 100, 30]
+              |> normalize
+              |> clip
+              |> threshold_filter
+
+print("pipeline result:", processed)
+print("pipeline length:", len(processed))
+
+// Apply a map to every element: multiply by 100 and round to Int.
+fn round2(x) { return int(round(x * 100.0)) }
+let rounded = processed => round2
+print("rounded (x100):", rounded)
+
+sum(rounded)

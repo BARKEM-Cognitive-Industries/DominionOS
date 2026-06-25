@@ -1,0 +1,19 @@
+[package]
+name = "host-ml-bench"
+version = "0.1.0"
+edition = "2021"
+description = "Native host baseline for the DominionOS ML benchmark — runs the identical dominion-core ml workload so guest (in-QEMU) numbers can be compared against the bare host."
+
+[[bin]]
+name = "host-ml-bench"
+path = "src/main.rs"
+
+[dependencies]
+# The very same engine the kernel runs. dominion-core is no_std, but a std binary
+# supplies `alloc`, so it links cleanly and we measure the *identical* code.
+dominion-core = { path = "../../dominion-core", features = ["fma", "simd"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

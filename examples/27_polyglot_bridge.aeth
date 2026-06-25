@@ -1,0 +1,84 @@
+// === 27: Polyglot Bridge — Dominion calling Python, Rust, JavaScript ===
+// Teaches: Lang::list, Lang::check, Lang::run, Lang::call, typed value bridging.
+// Dominion is the host language; guest programs run in a capability-bounded
+// interpreter with a step budget. Results come back as typed Dominion values.
+
+// ── Discover available guest languages ──
+let langs = Lang::list()
+print("supported languages:", langs)   // [Python, Rust, C++, C#, JavaScript, TypeScript, Java]
+
+// ── Lang::check: parse-check guest source without running it ──
+let py_fib = "def fib(n):\n    if n <= 1:\n        return n\n    return fib(n-1) + fib(n-2)\n"
+let fn_count = Lang::check("python", py_fib)
+print("fib.py defines", fn_count, "function(s)")
+
+// ── Lang::call: call a NAMED function with typed Dominion arguments ──
+// Python fibonacci — result comes back as Int (not a string).
+let fib10 = Lang::call("python", py_fib, "fib", 10)
+let fib15 = Lang::call("python", py_fib, "fib", 15)
+print("fib(10) via Python:", fib10)    // 55
+print("fib(15) via Python:", fib15)    // 610
+
+// ── JavaScript arithmetic ──
+let js_math = "function add(a, b) { return a + b; }\nfunction mul(a, b) { return a * b; }\n"
+let sum_js = Lang::call("javascript", js_math, "add", 7, 8)
+let prod_js = Lang::call("javascript", js_math, "mul", 6, 7)
+print("7 + 8 via JS:", sum_js)   // 15
+print("6 * 7 via JS:", prod_js)  // 42
+
+// ── TypeScript (same interop model) ──
+let ts_greet = "function greet(name: string): string { return \"hello, \" + name; }\n"
+let greeting = Lang::call("typescript", ts_greet, "greet", "world")
+print("TypeScript greeting:", greeting)   // hello, world
+
+// ── Lang::run: run a complete Python script, get the last expression ──
+let py_stats = "
+def mean(xs):
+    total = 0
+    for x in xs:
+        total = total + x
+    return total / len(xs)
+
+data = [4, 7, 13, 2, 9, 11, 6]
+result = mean(data)
+result
+"
+let run_result = Lang::run("python", py_stats)
+print("Python mean result:", run_result.value)   // typed Float, not a string
+print("steps consumed:", run_result.steps)
+
+// ── Round-trip: Dominion → Python → Dominion ──
+// Compute in Dominion, pass to Python for further processing, return result.
+let dominion_nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+let dominion_sum  = sum(dominion_nums)     // 55
+print("Dominion sum:", dominion_sum)
+
+let py_double_sum = "def double(n):\n    return n * 2\n"
+let doubled = Lang::call("python", py_double_sum, "double", dominion_sum)
+print("doubled in Python:", doubled)   // 110
+print("round-trip OK:", doubled == dominion_sum * 2)
+
+// ── Rust guest ──
+let rs_gcd = "fn gcd(a: i64, b: i64) -> i64 { if b == 0 { a } else { gcd(b, a % b) } }\n"
+let g = Lang::call("rust", rs_gcd, "gcd", 48, 18)
+print("GCD(48, 18) via Rust:", g)   // 6
+
+// ── Capabilities: guest programs run in a sandbox ──
+// Lang::call requires Execute capability — already granted in this context.
+// Lang::list / Lang::check only require Read.
+let pkg_list = Lang::packages()
+print("polyglot packages:", len(pkg_list))
+
+// ── Polyglot + Dominion DSL (builtins composition) ──
+// Use Dominion's new functional builtins to transform guest output.
+let raw_fibs = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
+let fib_sum  = sum(raw_fibs)
+let fib_uniq = unique(raw_fibs)    // dedup: [0,1,2,3,5,8,13,21,34]
+print("fibonacci sum:", fib_sum)
+print("unique values:", len(fib_uniq))
+
+// Verify Python and Dominion agree on fib(10).
+let dominion_fib10_match = fib10 == 55
+print("Python fib(10) == Dominion expected:", dominion_fib10_match)
+
+fib10

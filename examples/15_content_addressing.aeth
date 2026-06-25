@@ -1,0 +1,56 @@
+// === 15: Content Addressing and Hashing ===
+// Teaches: the hash builtin, content-addressed values, Latent (neural compression).
+
+// `hash(value)` returns the SHA-256 content hash of any value as a hex string.
+// In Dominion every value is content-addressable — identical values always hash
+// the same way regardless of when or where they are created.
+
+let a = hash(42)
+let b = hash(42)
+print("hash(42):", a)
+print("hashes equal:", a == b)   // always true — deterministic
+
+let c = hash("hello world")
+print("hash of string:", c)
+
+// A vector hashes based on its full contents.
+let v1 = hash([1, 2, 3])
+let v2 = hash([1, 2, 4])   // different last element
+let v3 = hash([1, 2, 3])   // same as v1
+print("hash [1,2,3] == hash [1,2,3]:", v1 == v3)
+print("hash [1,2,3] == hash [1,2,4]:", v1 == v2)   // false
+
+// An object's hash depends on its kind AND all its field values.
+object Item {
+    name: Str,
+    value: Int
+}
+let item1 = Item { name: "apple", value: 5 }
+let item2 = Item { name: "apple", value: 5 }
+let item3 = Item { name: "orange", value: 5 }
+
+print("identical objects hash equal:", hash(item1) == hash(item2))   // true
+print("different objects hash differ:", hash(item1) == hash(item3))  // false
+
+// Storing values by their hash — a content-addressed store.
+fn make_store() { return [] }
+fn store_put(store, val) {
+    let entry = [hash(val), val]
+    return push(store, entry)
+}
+fn store_get(store, key) {
+    for entry in store {
+        if entry[0] == key {
+            return entry[1]
+        }
+    }
+    return 0
+}
+
+let store = make_store()
+let store = store_put(store, "value_a")
+let store = store_put(store, 12345)
+let key = hash("value_a")
+print("retrieved:", store_get(store, key))
+
+hash(item1)

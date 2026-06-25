@@ -1,0 +1,70 @@
+(* ============================================================
+   Dominion Language Grammar  v0.1
+   Ground truth for dataset D1 (Dominion corpus). Generated Dominion
+   samples are rejected unless they (a) parse against this grammar
+   AND (b) pass the capability-monotonicity check described below.
+   ============================================================ *)
+
+program        = { top_level } ;
+top_level      = object_def | cell_def | function_def | import_stmt ;
+
+(* ---- Semantic objects (replace structs) ---- *)
+object_def     = "object" , ident , "{" , [ field_list ] , "}" ;
+field_list     = field , { "," , field } , [ "," ] ;
+field          = ident , ":" , type ;
+
+(* ---- Cells: actor-like state units gated by a capability ---- *)
+cell_def       = "cell" , ident , cap_clause , "{" , { cell_member } , "}" ;
+cap_clause     = "[" , "cap" , ":" , capability_type , "]" ;
+cell_member    = function_def ;
+
+(* ---- Functions = compute-graph nodes; may be device-tagged ---- *)
+function_def   = { decorator } , "fn" , ident ,
+                 "(" , [ param_list ] , ")" , [ "->" , type ] , block ;
+decorator      = "@" , ( "NPU" | "GPU" | "CPU" ) ;
+param_list     = param , { "," , param } ;
+param          = ident , ":" , type ;
+
+block          = "{" , { statement } , "}" ;
+statement      = let_stmt | return_stmt | expr_stmt ;
+let_stmt       = "let" , ident , "=" , expr , ";" ;
+return_stmt    = "return" , expr , ";" ;
+expr_stmt      = expr , ";" ;
+
+(* ---- Expressions. '=>' is the parallel-map operator. ---- *)
+expr           = pipe_expr ;
+pipe_expr      = primary , { "=>" , path } ;     (* invocations[..] => Cell::fn *)
+primary        = call | path | literal | "(" , expr , ")" ;
+call           = path , "(" , [ arg_list ] , ")" ;
+arg_list       = expr , { "," , expr } ;
+path           = ident , { "::" , ident } ;
+
+(* ---- Types: semantic primitives are first-class ---- *)
+type           = semantic_type | generic_type | ident ;
+semantic_type  = "Identity" | "Time" | "Resource" | "Capability" | "Latent" | "Money" ;
+generic_type   = ( "Vector" | "Latent" | "Capability" | "Resource" | "Money" ) ,
+                 "<" , type , ">" ;
+capability_type= "Capability" , "<" , ident , ">" ;
+
+import_stmt    = "import" , path , ";" ;
+
+literal        = number | string | ident ;
+number         = digit , { digit } ;
+string         = '"' , { character } , '"' ;
+ident          = letter , { letter | digit | "_" } ;
+letter         = "A".."Z" | "a".."z" ;
+digit          = "0".."9" ;
+character      = ? any character except '"' ? ;
+
+(* ============================================================
+   LINTER RULES (checked after parse; not expressible in EBNF)
+   L1. Monotonicity: any cap.derive / Capability<T> attenuation must
+       target a permission <= the parent's permission in the lattice.
+   L2. No raw pointers / no pointer arithmetic: '*', '&', '++' on an
+       object location is a hard reject (spatial-safety guarantee).
+   L3. Capability gating: a cell that performs a write-class call must
+       declare a Capability<...Write> in its cap_clause.
+   L4. Affine use: a moved/consumed binding may not be reused.
+   L5. Device tags are advisory only: @NPU/@GPU/@CPU must not change
+       program semantics (scheduler may override).
+   ============================================================ *)

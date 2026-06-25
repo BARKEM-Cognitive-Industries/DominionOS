@@ -1,0 +1,15 @@
+# Build for the custom HARD-float bare-metal target (`x86_64-dominion.json`): like
+# `x86_64-unknown-none` but with the FPU on, so f64 runs on hardware (SSE2) instead
+# of soft-float emulation (≈10× faster). Because this is a JSON target rather than a
+# precompiled one, `core`/`alloc` are built from source (`build-std`) — the toolchain
+# already ships `rust-src` for exactly this. The kernel turns the SSE unit on at boot
+# (`enable_sse()` in main.rs) before any float executes. No FMA by default, so results
+# stay bit-deterministic across host/guest/aarch64 (FMA is the opt-in `fma` feature).
+[build]
+target = "x86_64-dominion.json"
+
+[unstable]
+build-std = ["core", "alloc", "compiler_builtins"]
+build-std-features = ["compiler-builtins-mem"]
+# Newer nightlies gate `.json` custom target specs behind this flag.
+json-target-spec = true

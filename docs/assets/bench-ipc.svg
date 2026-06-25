@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="400" font-family="monospace,sans-serif">
+  <rect width="720" height="400" fill="#0d1117"/>
+  <text x="360" y="34" text-anchor="middle" fill="#e6edf3" font-size="16" font-weight="bold">IPC Throughput (messages/second)</text>
+  <text x="360" y="54" text-anchor="middle" fill="#8b949e" font-size="12">AetherOS — real WHPX run, i7-12650H</text>
+
+  <!-- bars -->
+  <!-- msg_passing: 133,266,744 → scale to 600px wide at 133M max -->
+  <!-- pool_serial: 17,356,411 -->
+  <!-- pool_parallel: 15,233,411 -->
+  <!-- distributed: 3,672,069 -->
+  <!-- crdt_merge: 11,391,218 -->
+
+  <!-- Y axis labels -->
+  <text x="20" y="105" fill="#8b949e" font-size="11">Zero-copy IPC</text>
+  <text x="20" y="165" fill="#8b949e" font-size="11">Pool serial exec</text>
+  <text x="20" y="225" fill="#8b949e" font-size="11">Pool parallel (8w)</text>
+  <text x="20" y="285" fill="#8b949e" font-size="11">Inter-core msgs</text>
+  <text x="20" y="345" fill="#8b949e" font-size="11">CRDT merges</text>
+
+  <!-- bar bg tracks -->
+  <rect x="200" y="82" width="480" height="36" rx="4" fill="#21262d"/>
+  <rect x="200" y="142" width="480" height="36" rx="4" fill="#21262d"/>
+  <rect x="200" y="202" width="480" height="36" rx="4" fill="#21262d"/>
+  <rect x="200" y="262" width="480" height="36" rx="4" fill="#21262d"/>
+  <rect x="200" y="322" width="480" height="36" rx="4" fill="#21262d"/>
+
+  <!-- bars (scale: 133M = 480px) -->
+  <rect x="200" y="82"  width="480" height="36" rx="4" fill="#1f6feb"/>
+  <rect x="200" y="142" width="62"  height="36" rx="4" fill="#238636"/>
+  <rect x="200" y="202" width="55"  height="36" rx="4" fill="#238636"/>
+  <rect x="200" y="262" width="13"  height="36" rx="4" fill="#9e6a03"/>
+  <rect x="200" y="322" width="41"  height="36" rx="4" fill="#9e6a03"/>
+
+  <!-- value labels -->
+  <text x="688" y="105" fill="#e6edf3" font-size="12" text-anchor="end">133.3 M/s</text>
+  <text x="270" y="165" fill="#e6edf3" font-size="12">17.4 M/s</text>
+  <text x="263" y="225" fill="#e6edf3" font-size="12">15.2 M/s</text>
+  <text x="221" y="285" fill="#e6edf3" font-size="12">3.7 M/s</text>
+  <text x="249" y="345" fill="#e6edf3" font-size="12">11.4 M/s</text>
+
+  <!-- latency callout -->
+  <text x="360" y="385" text-anchor="middle" fill="#58a6ff" font-size="12">Zero-copy IPC latency: 7 ns per message</text>
+</svg>

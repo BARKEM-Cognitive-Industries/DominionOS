@@ -1,0 +1,69 @@
+// === 19: Numeric Solver ===
+// Teaches: combining numerics, iteration, convergence — Newton's method in Dominion.
+
+// Newton-Raphson method to find sqrt(N) as a fixed-point iteration.
+// Starting guess x₀; iterate: xₙ₊₁ = 0.5 * (xₙ + N/xₙ)
+fn newton_sqrt(n, iterations) {
+    let x = float(n) / 2.0   // initial guess
+    let i = 0
+    while i < iterations {
+        x = 0.5 * (x + float(n) / x)
+        i = i + 1
+    }
+    return x
+}
+
+print("newton_sqrt(2, 20):", newton_sqrt(2, 20))    // ≈ 1.4142135
+print("builtin sqrt(2):", sqrt(2.0))               // for comparison
+
+// Bisection method to find a root of f(x) = x² - 2 on [1, 2].
+fn bisect(lo, hi, tolerance, max_iter) {
+    let i = 0
+    while i < max_iter {
+        let mid = (lo + hi) / 2.0
+        let fmid = mid * mid - 2.0   // f(mid)
+        if fmid < 0.0 {
+            lo = mid
+        } else {
+            hi = mid
+        }
+        if hi - lo < tolerance {
+            break
+        }
+        i = i + 1
+    }
+    return (lo + hi) / 2.0
+}
+
+let root2 = bisect(1.0, 2.0, 0.000001, 50)
+print("bisection root of x²-2:", root2)   // ≈ 1.41421
+
+// Fixed-point iteration to find the golden ratio φ: x = 1 + 1/x.
+fn golden_ratio(iters) {
+    let x = 1.0
+    let i = 0
+    while i < iters {
+        x = 1.0 + 1.0 / x
+        i = i + 1
+    }
+    return x
+}
+let phi = golden_ratio(30)
+print("golden ratio φ:", phi)   // ≈ 1.6180339
+
+// Gradient descent on f(x) = (x - 3)², minimum at x = 3.
+// Derivative f'(x) = 2(x - 3); step: x ← x - lr * f'(x).
+fn gradient_descent(start, lr, steps) {
+    let x = start
+    let i = 0
+    while i < steps {
+        let grad = 2.0 * (x - 3.0)
+        x = x - lr * grad
+        i = i + 1
+    }
+    return x
+}
+let min_x = gradient_descent(0.0, 0.1, 50)
+print("gradient descent minimum at x =", min_x)   // ≈ 3.0
+
+min_x

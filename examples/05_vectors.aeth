@@ -1,0 +1,39 @@
+// === 05: Vectors ===
+// Teaches: vector literals plus the whole sequence toolkit.
+
+// A vector literal. Vectors are immutable values — operations return new vectors.
+let v = [3, 1, 4, 1, 5, 9, 2, 6]
+
+// Size and element access.
+print("len",   len(v))          // 8
+print("get 0", get(v, 0))       // 3
+print("get -1", get(v, -1))     // 6  (negative index from the end)
+print("index", v[2])            // 4  (bracket indexing)
+print("first", first(v))        // 3
+print("last",  last(v))         // 6
+
+// push returns a NEW vector with the item appended.
+let v2 = push(v, 7)
+print("push", v2)
+
+// Structural operations.
+print("reverse", reverse(v))
+print("slice",   slice(v, 1, 4))         // elements [1..4)
+print("concat",  concat([1, 2], [3, 4])) // [1, 2, 3, 4]
+print("sort",    sort(v))                // ascending
+
+// Reductions over a Vector of Int.
+print("sum",     sum(v))
+print("product", product([1, 2, 3, 4]))  // 24
+print("min",     min(v))
+print("max",     max(v))
+
+// Membership.
+print("contains 5",  contains(v, 5))
+print("contains 99", contains(v, 99))
+
+// `range(n)` builds [0, 1, .. n-1] — handy for generating sequences.
+print("range", range(5))        // [0, 1, 2, 3, 4]
+
+// Program result: a deterministic reduction.
+sum(sort([5, 4, 3, 2, 1]))

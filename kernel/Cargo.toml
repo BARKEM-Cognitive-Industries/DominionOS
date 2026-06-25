@@ -1,0 +1,73 @@
+[package]
+name = "dominion-kernel"
+version = "0.1.0"
+edition = "2021"
+description = "DominionOS — the bootable base system and safe-mode terminal for DominionOS."
+
+[[bin]]
+name = "dominion-kernel"
+test = false
+bench = false
+
+[features]
+# Boot straight into the headless bare-metal self-test battery instead of the
+# interactive terminal. Used by the boot builder's `--test` mode for CI.
+qemu_test = []
+# Boot straight into the headless real-world benchmark battery (`bench` module),
+# reporting machine-readable `BENCH ...` lines over serial and exiting QEMU. Pulls
+# in `big_heap` because the benchmarks need room to scale to ~1M tasks.
+qemu_bench = ["big_heap", "smp"]
+# Boot straight into the headless *validation* battery (memory-latency mountain,
+# model-vs-hardware boundary, soak, chaos/failure-injection, and — with `smp` —
+# the real cross-core scaling curve). Answers "is this real on hardware and does
+# it survive stress?" rather than "how fast is the abstraction?".
+qemu_validate = ["big_heap", "smp"]
+# Recovery boot: skip the graphical desktop and drop straight into the ASH text shell
+# on the framebuffer console, and mirror every boot stage to the screen. Bypasses
+# gfx::init's full-screen buffer allocation and the desktop render path — the
+# diagnostic environment for hardware where the desktop will not come up. Does NOT
+# pull in `smp`, so AP bring-up (another bare-metal wedge point) is also skipped.
+safe_mode = []
+# Opt back into USB (xHCI) auto-probe as a block device + debug-log target. OFF by
+# default: re-initialising the controller the machine booted from wedges the boot on
+# real hardware. The driver code stays compiled; this only controls auto-probe at boot.
+usb_storage = []
+# Real symmetric multiprocessing: bring up the application processors (ACPI MADT
+# + LAPIC + AP trampoline + INIT-SIPI-SIPI) so work can run on multiple host cores.
+smp = []
+# Raise the kernel heap to 1 GiB (see allocator.rs). Needs a matching QEMU `-m`.
+big_heap = []
+# Opt-in hardware fused multiply-add for the ML matmul (≈2× on multiply-bound work,
+# but NON-deterministic — off by default). Build with `--target x86_64-dominion-fma.json`
+# and a CPU/QEMU `-cpu` that exposes AVX+FMA; the kernel enables AVX state at boot.
+# Drive it via `run-bench.ps1 -Fma`.
+fma = ["dominion-core/fma"]
+# Propagate the illustrative 31-bit Schnorr group to dominion-core for self-tests.
+# MUST NOT be set in production or release kernel builds.
+demo-crypto = ["dominion-core/demo-crypto"]
+
+[dependencies]
+# `render-full` brings in the unified 2D/3D render stack (raster3d, render_bench,
+# scene3d, …) that the kernel's `gfx`/`desktop` modules call directly.
+dominion-core = { path = "../dominion-core", features = ["render-full"] }
+# The maintained bootloader (0.11) — built for current nightly, BIOS + UEFI,
+# hands the kernel a linear framebuffer and a memory map.
+bootloader_api = "0.11.15"
+font8x8 = { version = "0.3.1", default-features = false }
+spin = "0.9.8"
+x86_64 = "0.14.13"
+uart_16550 = "0.2.19"
+pic8259 = "0.10.4"
+pc-keyboard = "0.7.0"
+linked_list_allocator = "0.10.5"
+noto-sans-mono-bitmap = { version = "0.3.2", default-features = false, features = ["regular", "bold", "size_16", "size_20", "size_24", "unicode-basic-latin", "unicode-latin-1-supplement"] }
+
+[dependencies.lazy_static]
+version = "1.5.0"
+features = ["spin_no_std"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

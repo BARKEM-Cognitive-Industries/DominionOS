@@ -1,0 +1,53 @@
+// === 10: Objects ===
+// Teaches: object type definitions, object literals, field access, nested objects.
+
+// An `object` defines a named record type with typed fields.
+object Point {
+    x: Int,
+    y: Int
+}
+
+object Rectangle {
+    origin: Point,
+    width: Int,
+    height: Int
+}
+
+// Object literal: `TypeName { field: value, ... }`.
+let p = Point { x: 3, y: 4 }
+print("point:", p.x, p.y)
+
+// Field access with the dot operator.
+let px = p.x
+let py = p.y
+print("x =", px, "y =", py)
+
+// Functions that work on objects.
+fn distance_from_origin(pt) {
+    sqrt(float(pt.x * pt.x + pt.y * pt.y))
+}
+print("distance:", distance_from_origin(p))
+
+// Objects in vectors.
+let points = [
+    Point { x: 0, y: 0 },
+    Point { x: 1, y: 1 },
+    Point { x: 3, y: 4 }
+]
+fn pt_dist(pt) { sqrt(float(pt.x * pt.x + pt.y * pt.y)) }
+let distances = points => pt_dist
+print("distances:", distances)
+
+// Nested objects.
+let rect = Rectangle {
+    origin: Point { x: 10, y: 20 },
+    width: 100,
+    height: 50
+}
+print("rect origin x:", rect.origin.x)
+print("rect area:", rect.width * rect.height)
+
+fn area(r) { return r.width * r.height }
+print("area:", area(rect))
+
+area(rect)

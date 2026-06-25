@@ -1,0 +1,42 @@
+// === 16: Affine (Linear) Bindings ===
+// Teaches: `linear` keyword — use-once bindings, resource ownership, no-GC.
+
+// `linear x = expr` creates an affine binding.
+// The value may be read exactly once; the reference is consumed (moved) on that
+// read. At scope end any unconsumed linear value is cryptographically invalidated
+// — no garbage collector needed because ownership is explicit and statically
+// bounded. This is Dominion's ownership model without macros or lifetime syntax.
+
+// Basic linear binding and single consumption.
+linear secret = 42
+let used = secret         // consumes the binding
+print("consumed secret:", used)
+
+// Linear values are first-class — pass through functions.
+fn consume_and_double(v) {
+    return v * 2
+}
+linear key = 7
+let doubled_key = consume_and_double(key)
+print("doubled key:", doubled_key)
+
+// Linear bindings work with all value types.
+linear message = "classified"
+let length = len(message)   // consumes message; length is a plain let
+print("message length:", length)
+
+linear data = [1, 2, 3, 4, 5]
+let total = sum(data)       // consuming the vector
+print("sum of linear vector:", total)
+
+// Linear is safe across control flow — each branch consumes at most once.
+linear flag = true
+if flag {
+    print("flag was true")
+}
+
+// The Dominion runtime (in production) invalidates the memory of unconsumed
+// linear values at scope end — this example demonstrates the syntax and
+// single-ownership semantics the interpreter tracks.
+
+total

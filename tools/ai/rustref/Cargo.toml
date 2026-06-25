@@ -1,0 +1,15 @@
+[package]
+name = "rustref"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone native Rust inference + benchmark for DominionOS .aem models. Mirrors the on-device forward (RoPE rotate-half, RMSNorm, GQA, SwiGLU, int8) but stands alone so it builds regardless of the in-flight dominion-core lib. Parity target = ai/verify oracle."
+
+[[bin]]
+name = "rustref"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

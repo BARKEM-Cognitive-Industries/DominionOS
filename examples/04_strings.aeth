@@ -1,0 +1,38 @@
+// === 04: Strings ===
+// Teaches: the full string toolkit — case, trim, split/join, search, chars, indexing.
+
+let s = "  Hello, Dominion World  "
+
+// Whitespace + case.
+print("trim",  trim(s))
+print("upper", upper("dominion"))
+print("lower", lower("DOMINION"))
+
+// Concatenation: both `+` and the `concat` builtin work on Str.
+print("concat+", "foo" + "bar")
+print("concat()", concat("foo", "bar"))
+
+// split breaks a string into a Vector; join glues a Vector back with a separator.
+let words = split("a,b,c,d", ",")
+print("split", words)              // [a, b, c, d]
+print("join",  join(words, "-"))   // a-b-c-d
+
+// split on the empty separator yields the individual characters; `chars` does too.
+print("chars", chars("hi"))        // [h, i]
+
+// Predicates: starts_with / ends_with / contains.
+print("starts", starts_with("dominion-os", "dominion"))
+print("ends",   ends_with("report.aeth", ".aeth"))
+print("has",    contains("dominionos", "her"))
+
+// replace substitutes every occurrence.
+print("replace", replace("a-b-c", "-", "_"))
+
+// reverse works on strings too; len counts characters; indexing is by char.
+print("reverse", reverse("abc"))
+print("len", len("hello"))         // 5
+print("index", "abcd"[1])          // b
+print("neg index", "abcd"[-1])     // d  (negative counts from the end)
+
+// Program result.
+join(split("one two three", " "), "|")

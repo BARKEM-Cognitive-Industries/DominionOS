@@ -1,0 +1,49 @@
+// === 13: Extended Numerics ===
+// Teaches: bigint, decimal, rational, complex, dual (autodiff), interval, quaternion.
+
+// ── BigInt: arbitrary-precision integers (never overflow) ──
+let big = bigint(9999999999999999)
+print("bigint:", big)
+
+// ── Decimal: arbitrary-precision base-10 (exact, no floating-point error) ──
+let d1 = decimal(1)
+let d2 = decimal(3)
+let third = dec_div(d1, d2, 10)      // 0.333... to 10 decimal places
+print("1/3 (decimal):", third)
+
+let root2 = dec_sqrt(decimal(2), 20)  // sqrt(2) to 20 decimal places
+print("sqrt(2) decimal:", dec_round(root2, 6))
+
+// ── Rational: exact fractions p/q (zero rounding) ──
+let half = rational(1, 2)
+let third_r = rational(1, 3)
+print("1/2 rational:", half)
+print("1/3 rational:", third_r)
+
+// ── Complex: a + bi ──
+let c1 = complex(3.0, 4.0)     // 3 + 4i
+let c2 = complex(1.0, -1.0)    // 1 - i
+print("complex magnitude |3+4i| =", cabs(c1))   // 5.0
+print("conjugate of 3+4i =", conj(c1))
+
+// ── Dual numbers: exact forward-mode automatic differentiation ──
+// dual(a, b) = a + bε where ε²=0; the ε part tracks the derivative.
+// Differentiating f(x) = x² at x=3: df/dx = 2x = 6.
+let xd = dvar(3.0)       // x=3, derivative seed = 1
+let fd = dpow(xd, 2)     // f(x) = x^2
+print("f(3) =", fd)
+// The dual number's derivative part = 6 (accessed via .der field if needed).
+
+// ── Interval arithmetic: rigorous error-bounded ranges ──
+let iv1 = interval(1.0, 2.0)    // [1, 2]
+let iv2 = interval(3.0, 4.0)    // [3, 4]
+print("interval [1,2] + [3,4] = [4,6]:", iv1)   // shows bounds
+print("4.0 in [3,4]?", icontains(iv2, 4.0))     // true
+print("hull:", ihull(iv1, iv2))                  // [1, 4]
+
+// ── Quaternion: w + xi + yj + zk (3-D rotation algebra) ──
+let q = quat(1.0, 0.0, 1.0, 0.0)
+let qn = qnormalize(q)
+print("quaternion norm after normalize:", qnorm(qn))   // ≈ 1.0
+
+cabs(c1)

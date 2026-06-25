@@ -1,0 +1,5 @@
+﻿# Build config for the host-ml benchmark — local to this crate only.
+# target-cpu=native removed: it causes SIGILL on machines without the same
+# CPU feature set (e.g. CI runners, cross-arch test boxes).
+[build]
+rustflags = []

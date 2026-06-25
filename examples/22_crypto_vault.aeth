@@ -1,0 +1,119 @@
+// === 22: Crypto Vault ===
+// Teaches: cell/cap gates, hash-based AEAD simulation, content addressing.
+// In the real kernel: ChaCha20-Poly1305 AEAD with the vault capability.
+// Here: SHA-256 tag || plaintext, verified on decrypt.
+
+// String-slice helper: chars(s) → vector of chars → slice → join.
+fn str_slice(s, start, end_idx) {
+    let cv = chars(s)
+    let sl = slice(cv, start, end_idx)
+    return join(sl, "")
+}
+
+fn str_len(s) { return len(chars(s)) }
+
+// --- Capability-gated cell (correct syntax: [cap: Capability<X>]) ---
+cell VaultCell [cap: Capability<StorageWrite>] {
+
+    fn derive_key(password, salt) {
+        return hash(password + salt)
+    }
+
+    fn seal(key, plaintext) {
+        // tag = SHA-256(key || plaintext), then prepend to plaintext.
+        // Tag is always 64 hex chars.
+        let tag = hash(key + plaintext)
+        return tag + plaintext
+    }
+
+    fn open(key, ciphertext) {
+        let n = str_len(ciphertext)
+        if n < 64 { return "" }
+        let stored_tag = str_slice(ciphertext, 0, 64)
+        let body       = str_slice(ciphertext, 64, n)
+        let expected   = hash(key + body)
+        if stored_tag == expected { return body }
+        return ""
+    }
+}
+
+// --- In-memory content-addressed object store ---
+let store_addrs = []
+let store_vals  = []
+
+fn store(value) {
+    let addr = hash(str(value))
+    store_addrs = push(store_addrs, addr)
+    store_vals  = push(store_vals, value)
+    return addr
+}
+
+fn retrieve(addr) {
+    let i = 0
+    while i < len(store_addrs) {
+        if store_addrs[i] == addr { return store_vals[i] }
+        i = i + 1
+    }
+    return ""
+}
+
+// --- Main program ---
+let password = "hunter2"
+let salt     = "dominionos-2026"
+let key      = VaultCell::derive_key(password, salt)
+print("derived key:", key)
+
+// Encrypt / decrypt round-trip.
+let secret = "the-root-encryption-key-is-0xDEADBEEF"
+let sealed = VaultCell::seal(key, secret)
+let opened = VaultCell::open(key, sealed)
+print("round-trip OK:", opened == secret)
+
+// --- Content addressing ---
+let obj_a  = "important configuration block"
+let obj_b  = "important configuration block"
+let addr_a = hash(obj_a)
+let addr_b = hash(obj_b)
+print("identical objects same address:", addr_a == addr_b)
+
+let addr_c = hash("slightly different")
+print("distinct objects differ:", addr_a != addr_c)
+
+// Store and retrieve via content address.
+let stored_addr = store(obj_a)
+let retrieved   = retrieve(stored_addr)
+print("store/retrieve round-trip:", retrieved == obj_a)
+
+// --- Layered encryption: seal the stored address itself ---
+let addr_sealed = VaultCell::seal(key, stored_addr)
+let addr_back   = VaultCell::open(key, addr_sealed)
+print("sealed-address round-trip:", addr_back == stored_addr)
+
+// --- Integrity: tampered ciphertext fails ---
+let corrupted = sealed + "x"
+let tampered_result = VaultCell::open(key, corrupted)
+print("tampered ciphertext detected:", tampered_result == "")
+
+// --- Batch vault entries ---
+let entries = [
+    ["user:alice", "{ role: admin, credits: 500 }"],
+    ["user:bob",   "{ role: viewer, credits: 100 }"],
+    ["config:theme", "dark"]
+]
+
+let sealed_entries = []
+for entry in entries {
+    let ct = VaultCell::seal(key, entry[1])
+    sealed_entries = push(sealed_entries, [entry[0], ct])
+}
+print("sealed", len(sealed_entries), "entries")
+
+// Decrypt and verify all.
+let all_ok = true
+for entry in sealed_entries {
+    let pt = VaultCell::open(key, entry[1])
+    if len(pt) == 0 { all_ok = false }
+}
+print("all entries decrypt OK:", all_ok)
+
+len(sealed_entries)

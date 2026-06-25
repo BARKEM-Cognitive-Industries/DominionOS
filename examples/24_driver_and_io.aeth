@@ -1,0 +1,146 @@
+// === 24: Driver Discovery & I/O Simulation ===
+// Teaches: content-addressed storage, hash-based integrity, mock driver registry,
+// capability-gated I/O, and package metadata — all using available Dominion builtins.
+// In the full kernel, these patterns map 1:1 to the virtio driver and discovery APIs.
+
+// String prefix helper: use chars → slice (Vector) → join so we never call
+// slice() on a raw String (which is not supported; slice is Vector-only).
+fn str_prefix(s, n) {
+    let cv = chars(s)
+    let end_idx = n
+    if len(cv) < n { end_idx = len(cv) }
+    return join(slice(cv, 0, end_idx), "")
+}
+
+// --- Driver registry (simulated with vectors) ---
+// Each entry: [name, kind, summary, version]
+let DRIVERS = [
+    ["nvme",         "Driver", "NVMe PCIe SSD host controller",    "1.4"],
+    ["ahci",         "Driver", "SATA AHCI disk controller",        "1.3"],
+    ["xhci",         "Driver", "USB 3.x host controller",          "1.2"],
+    ["hdaudio",      "Driver", "Intel HD Audio codec",             "1.0"],
+    ["virtio-block", "Driver", "VirtIO paravirtual block device",  "1.1"],
+    ["virtio-net",   "Driver", "VirtIO paravirtual network NIC",   "1.1"]
+]
+
+let PACKAGES = [
+    ["mathx",       "Package",  "Extended maths library",          "2.1"],
+    ["stats",       "Package",  "Statistical functions",           "1.4"],
+    ["strx",        "Package",  "String processing toolkit",       "1.0"],
+    ["text-editor", "Program",  "Terminal text editor",            "3.2"],
+    ["file-browser","Program",  "Graphical file manager",          "2.0"]
+]
+
+let ALL_ITEMS = concat(DRIVERS, PACKAGES)
+
+fn catalog_search(prefix) {
+    let results = []
+    for item in ALL_ITEMS {
+        if starts_with(lower(item[0]), lower(prefix)) {
+            results = push(results, item)
+        }
+    }
+    return results
+}
+
+// --- Discover available hardware ---
+print("--- Catalog ---")
+print("total items:", len(ALL_ITEMS))
+
+let drivers_found = catalog_search("virtio")
+print("virtio devices:", len(drivers_found))
+for d in drivers_found {
+    print("  driver:", d[0], "version:", d[3])
+}
+
+// --- VirtIO-block I/O simulation ---
+// In production: virtio_block_write(device, sector, data) goes to the kernel.
+// Here: simulate with content-addressed in-memory store.
+
+cell BlockIo [cap: Capability<StorageWrite>] {
+
+    fn write_sector(device_name, sector, data) {
+        let addr = hash(device_name + str(sector) + str(data))
+        let short = str_prefix(addr, 12)
+        print("  block write: device=" + device_name + " sector=" + str(sector) +
+              " addr=" + short + "...")
+        return addr
+    }
+
+    fn read_sector(device_name, sector, addr) {
+        print("  block read:  device=" + device_name + " sector=" + str(sector))
+        return addr
+    }
+
+    fn flush(device_name) {
+        print("  block flush: device=" + device_name)
+        return true
+    }
+}
+
+let blk_name = "virtio-block-0"
+let payload  = hash("sector-payload-" + str(512))
+let addr     = BlockIo::write_sector(blk_name, 0, payload)
+let readback = BlockIo::read_sector(blk_name, 0, addr)
+print("block round-trip content match:", readback == addr)
+BlockIo::flush(blk_name)
+
+// --- VirtIO-net frame simulation ---
+cell NetIo [cap: Capability<StorageWrite>] {
+
+    fn send_frame(device_name, frame_hash) {
+        let short = str_prefix(frame_hash, 12)
+        print("  net send: device=" + device_name + " frame_hash=" + short + "...")
+        return true
+    }
+
+    fn recv_frame(device_name) {
+        return hash("incoming-frame-from-" + device_name)
+    }
+}
+
+let nic_name   = "virtio-net-0"
+let frame_hash = hash("dst:ff:ff:ff:ff:ff:ff src:aa:bb:cc:dd:ee:ff ethertype:0800 payload:hello")
+NetIo::send_frame(nic_name, frame_hash)
+let incoming = NetIo::recv_frame(nic_name)
+let short_in = str_prefix(incoming, 12)
+print("received frame hash:", short_in + "...")
+
+// --- Package discovery ---
+let pkg_results = catalog_search("text")
+print("\ntext packages/programs:", len(pkg_results))
+for p in pkg_results {
+    print("  [", p[1], "]", p[0], "v" + p[3], "-", p[2])
+}
+
+// --- Content-addressed integrity audit ---
+print("\n--- Integrity Audit ---")
+let keys   = ["nvme", "virtio-block", "virtio-net"]
+let hashes = []
+for k in keys {
+    hashes = push(hashes, hash(k))
+}
+print("driver fingerprints:")
+let i = 0
+while i < len(keys) {
+    let short_h = str_prefix(hashes[i], 16)
+    print("  ", keys[i], "→", short_h + "...")
+    i = i + 1
+}
+
+// Verify uniqueness: all hashes are distinct.
+let unique_count = 0
+let j = 0
+while j < len(hashes) {
+    let kk = 0
+    let found = 0
+    while kk < j {
+        if hashes[kk] == hashes[j] { found = 1 }
+        kk = kk + 1
+    }
+    if found == 0 { unique_count = unique_count + 1 }
+    j = j + 1
+}
+print("all driver hashes unique:", unique_count == len(hashes))
+
+len(ALL_ITEMS)

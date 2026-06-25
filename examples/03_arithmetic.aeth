@@ -1,0 +1,38 @@
+// === 03: Arithmetic and operators ===
+// Teaches: every arithmetic, comparison and logical operator + precedence.
+
+// Arithmetic: + - * / % (integer division truncates toward zero).
+print("add", 2 + 3)
+print("sub", 10 - 4)
+print("mul", 6 * 7)
+print("div", 17 / 5)     // 3  (integer division)
+print("rem", 17 % 5)     // 2  (remainder)
+
+// Float arithmetic when any operand is a Float.
+print("fdiv", 17.0 / 5.0)
+
+// Unary minus and logical not.
+print("neg", -8)
+print("not", !false)
+
+// Precedence: * / % bind tighter than + -, and parentheses override.
+print("prec", 1 + 2 * 3)       // 7, not 9
+print("paren", (1 + 2) * 3)    // 9
+
+// Comparisons return Bool: < > <= >= == !=
+print("lt", 3 < 5)
+print("ge", 5 >= 5)
+print("eq", 4 == 4)
+print("ne", 4 != 5)
+
+// Logical && and || short-circuit (left-to-right).
+print("and", true && false)
+print("or",  false || true)
+
+// A combined expression exercising precedence across categories.
+// == is looser than the arithmetic, so this is (2+2*3) == 8 && (1 < 2).
+let result = 2 + 2 * 3 == 8 && 1 < 2
+print("combined", result)
+
+// Program result: a final integer expression so 03_arithmetic.aeth.expect can lock it.
+1 + 2 * 3 - 4 / 2

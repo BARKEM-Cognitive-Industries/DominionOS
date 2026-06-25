@@ -1,0 +1,64 @@
+// === 12: Hardware Placement Decorators ===
+// Teaches: @CPU, @GPU, @NPU placement hints; route builtin; heterogeneous dispatch.
+
+// @CPU forces execution on the general-purpose CPU core.
+@CPU
+fn cpu_dot(a, b) {
+    // Dot-product between two float vectors, CPU-bound.
+    let result = 0.0
+    let i = 0
+    while i < len(a) {
+        result = result + float(a[i]) * float(b[i])
+        i = i + 1
+    }
+    return result
+}
+
+// @GPU routes the computation to the GPU node. The scheduler honours the hint
+// when a GPU is available; falls back to CPU otherwise.
+@GPU
+fn gpu_matmul(rows_a, cols_a, data_a, rows_b, cols_b, data_b) {
+    let ta = tensor(rows_a, cols_a, data_a)
+    let tb = tensor(rows_b, cols_b, data_b)
+    return matmul(ta, tb)
+}
+
+// @NPU routes hyperdimensional / neuromorphic operations to the NPU.
+@NPU
+fn npu_encode(dim, symbol) {
+    // Hypervectors are first-class semantic primitives in Dominion.
+    return hypervector(dim, symbol)
+}
+
+// tensor(rows, cols, data) — 2×2 identity matrix.
+let t  = tensor(2, 2, [1, 0, 0, 1])
+let hv = hypervector(512, "hello")
+route(t)    // logs: placed on GPU
+route(hv)   // logs: placed on NPU
+
+// Dot products on the CPU.
+let a   = [1, 2, 3, 4]
+let b   = [4, 3, 2, 1]
+let dot = cpu_dot(a, b)
+print("CPU dot product:", dot)   // 4+6+6+4 = 20.0
+
+// GPU 2×2 matrix multiply: [[1,2],[3,4]] × [[5,6],[7,8]] = [[19,22],[43,50]]
+let C = gpu_matmul(2, 2, [1, 2, 3, 4], 2, 2, [5, 6, 7, 8])
+print("GPU matmul result:", C)
+
+// NPU hypervector encoding.
+let hv2 = npu_encode(1024, "world")
+print("NPU hypervector dim:", 1024)   // dim of the encoded hv
+
+// Bind two hypervectors (XOR in HD computing).
+let hv_a = hypervector(64, "concept_a")
+let hv_b = hypervector(64, "concept_b")
+let bound = bind(hv_a, hv_b)
+print("bound hypervector:", bound)
+
+// `route` returns a routing token showing where the value will execute.
+let r1 = route(t)    // tensor → GPU
+let r2 = route(hv)   // hypervector → NPU
+print("routes:", r1, r2)
+
+int(dot)

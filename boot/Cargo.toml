@@ -1,0 +1,8 @@
+[package]
+name = "dominion-boot"
+version = "0.1.0"
+edition = "2021"
+description = "Host-side image builder: wraps the DominionOS kernel ELF into a bootable BIOS/UEFI disk image."
+
+[dependencies]
+bootloader = "0.11.15"

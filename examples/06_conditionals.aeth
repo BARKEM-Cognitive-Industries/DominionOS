@@ -1,0 +1,57 @@
+// === 06: Conditionals ===
+// Teaches: if / else if / else, comparison operators, boolean logic.
+
+let x = 15
+
+// Simple if/else — only one branch executes.
+if x > 10 {
+    print("x is greater than 10")
+} else {
+    print("x is 10 or less")
+}
+
+// else if chains — first true branch wins.
+if x < 5 {
+    print("small")
+} else {
+    if x < 20 {
+        print("medium")   // this branch runs
+    } else {
+        print("large")
+    }
+}
+
+// Boolean operators in conditions.
+let a = true
+let b = false
+if a && !b {
+    print("a is true and b is false")
+}
+
+// Equality and inequality.
+let name = "Dominion"
+if name == "Dominion" {
+    print("welcome to Dominion!")
+}
+if name != "other" {
+    print("not other")
+}
+
+// Nested conditions.
+let score = 85
+if score >= 90 {
+    print("A")
+} else {
+    if score >= 80 {
+        print("B")   // score == 85, runs here
+    } else {
+        if score >= 70 {
+            print("C")
+        } else {
+            print("F")
+        }
+    }
+}
+
+// Condition result: the last expression in the program.
+score >= 80
