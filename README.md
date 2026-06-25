@@ -1,4 +1,4 @@
-# AetherOS
+# DominonOS
 
 > **Experimental. In development. Use at your own risk.**
 > Real hardware can be bricked. QEMU or expendable bare metal only until this stabilises.
@@ -11,7 +11,7 @@ A capability-secured operating system built from scratch in Rust. We've spent ab
 
 ## What this actually is
 
-AetherOS is a research OS. Not a replacement for Linux or Windows. Not production ready. A proof of concept that answers one question: can you build a practical OS where capability-based security, deterministic execution, and content-addressed storage are first-class primitives rather than bolted-on afterthoughts?
+DominonOS is a research OS. Not a replacement for Linux or Windows. Not production ready. A proof of concept that answers one question: can you build a practical OS where capability-based security, deterministic execution, and content-addressed storage are first-class primitives rather than bolted-on afterthoughts?
 
 The answer so far: yes.
 
@@ -109,7 +109,7 @@ These aren't marketing claims. They're in the code, enforced at the kernel level
 
 ## Benchmarks
 
-These numbers come from `run-bench.ps1` running AetherOS inside QEMU with WHPX (Windows Hypervisor Platform, near-native speed). Test machine: Intel i7-12650H, 16 GB DDR5, Windows 11 host, 8 vCPUs allocated to QEMU, 4 GiB RAM.
+These numbers come from `run-bench.ps1` running DominonOS inside QEMU with WHPX (Windows Hypervisor Platform, near-native speed). Test machine: Intel i7-12650H, 16 GB DDR5, Windows 11 host, 8 vCPUs allocated to QEMU, 4 GiB RAM.
 
 We have not run Linux or Windows benchmarks yet on the same machine. Those comparisons will come when the Linux bench harness (`bench/linux/run-linux-bench.sh`) is complete.
 
@@ -195,7 +195,7 @@ cargo build --release
 **Create bootable disk image**
 ```powershell
 cd ..\boot
-cargo run --release -- ..\kernel\target\x86_64-dominion\release\dominion-kernel ..\aetheros.img
+cargo run --release -- ..\kernel\target\x86_64-dominion\release\dominion-kernel ..\DominonOS.img
 ```
 
 **Run in QEMU**
@@ -264,7 +264,7 @@ The kernel is small. The core library is large. That's intentional — most OS l
 
 ## Infrastructure we need to set up
 
-AetherOS has the code for a distributed network (DominionLink), a package repository, and a compute pool. None of it is deployed yet. The full setup guide is in `INFRASTRUCTURE.md`. Short version of what's needed:
+DominonOS has the code for a distributed network (DominionLink), a package repository, and a compute pool. None of it is deployed yet. The full setup guide is in `INFRASTRUCTURE.md`. Short version of what's needed:
 
 **AetherLink bootstrap nodes** (3-5 for redundancy): 2 vCPU, 4 GB RAM, 100 GB SSD each. Listen on UDP 5000 (DHT). Geographic spread helps.
 
@@ -309,7 +309,7 @@ Dual licensed. Details in `LICENSE.md`.
 
 Attribution is always required:
 ```
-AetherOS, developed by Cognitive Industries (https://cognitive-industries.org)
+DominonOS, developed by Cognitive Industries (https://cognitive-industries.org)
 ```
 
 ---
@@ -345,4 +345,4 @@ We built this in about four days. Sparse updates are likely unless there's real 
 
 ---
 
-*AetherOS is a Cognitive Industries research project. ~4 days of work. Real security model. Incomplete frontend. Released because people asked.*
+*DominonOS is a Cognitive Industries research project. ~4 days of work. Real security model. Incomplete frontend. Released because people asked.*
