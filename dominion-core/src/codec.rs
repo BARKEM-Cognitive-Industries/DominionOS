@@ -391,7 +391,10 @@ impl Codec for PpmCodec {
             Some(Datum::Bytes(p)) => p,
             _ => return Err(CodecError::Malformed("Image missing 'pixels'".to_string())),
         };
-        let need = (width as usize) * (height as usize) * 3;
+        let need = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|p| p.checked_mul(3))
+            .ok_or_else(|| CodecError::Malformed("Image dimensions overflow".to_string()))?;
         if pixels.len() != need {
             return Err(CodecError::Malformed("Image pixel length does not match dimensions".to_string()));
         }

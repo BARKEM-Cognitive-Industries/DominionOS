@@ -7,12 +7,20 @@ use super::ast::{BinOp, Expr, Func, Program, Stmt};
 use super::lexer::{lex, Tok};
 use super::*;
 
+/// Hard cap on recursive-descent nesting. Guest source is untrusted input, and
+/// the bare-metal kernel stack is small with no guard page, so unbounded
+/// recursion (e.g. `((((...))))` or deep `if`/block nesting) would overflow the
+/// stack and corrupt memory. Well past any realistic legitimate program.
+const MAX_PARSE_DEPTH: usize = 128;
+
 struct Parser<'a> {
     toks: Vec<Tok>,
     pos: usize,
     d: Dialect,
     lang: Language,
     _src: &'a str,
+    /// Current recursion depth of the descent, bounded by `MAX_PARSE_DEPTH`.
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -75,7 +83,7 @@ impl<'a> Parser<'a> {
 pub fn parse(src: &str, lang: Language) -> Result<Program, RunError> {
     let d = lang.dialect();
     let toks = lex(src, &d)?;
-    let mut p = Parser { toks, pos: 0, d, lang, _src: src };
+    let mut p = Parser { toks, pos: 0, d, lang, _src: src, depth: 0 };
     let mut imports: Vec<&'static str> = Vec::new();
     let mut funcs: Vec<Func> = Vec::new();
     let mut main: Vec<Stmt> = Vec::new();
@@ -511,6 +519,17 @@ impl<'a> Parser<'a> {
     // ── statements ──
 
     fn parse_stmt(&mut self) -> Result<Stmt, RunError> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth -= 1;
+            return Err(RunError::Parse(String::from("parser nesting too deep")));
+        }
+        let r = self.parse_stmt_body();
+        self.depth -= 1;
+        r
+    }
+
+    fn parse_stmt_body(&mut self) -> Result<Stmt, RunError> {
         // control flow
         if self.is_ident("if") {
             return self.parse_if();
@@ -544,6 +563,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_if(&mut self) -> Result<Stmt, RunError> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth -= 1;
+            return Err(RunError::Parse(String::from("parser nesting too deep")));
+        }
         self.pos += 1; // if
         let cond = self.parse_paren_or_expr_cond()?;
         let then = self.parse_block()?;
@@ -559,10 +583,16 @@ impl<'a> Parser<'a> {
                 els = self.parse_block()?;
             }
         }
+        self.depth -= 1;
         Ok(Stmt::If(cond, then, els))
     }
 
     fn parse_if_as_elif(&mut self) -> Result<Stmt, RunError> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth -= 1;
+            return Err(RunError::Parse(String::from("parser nesting too deep")));
+        }
         self.pos += 1; // elif
         let cond = self.parse_paren_or_expr_cond()?;
         let then = self.parse_block()?;
@@ -573,6 +603,7 @@ impl<'a> Parser<'a> {
         } else if self.eat_ident("else") {
             els = self.parse_block()?;
         }
+        self.depth -= 1;
         Ok(Stmt::If(cond, then, els))
     }
 
@@ -759,9 +790,20 @@ impl<'a> Parser<'a> {
                         d: self.d,
                         lang: self.lang,
                         _src: self._src,
+                        depth: self.depth,
                     };
                     let target = sub.parse_expr()?;
                     if let Expr::Index(base, idx) = target {
+                        // Apply the compound operator against the element read,
+                        // matching the plain-var/decl branches (`arr[i] += v`).
+                        let rhs = match compound_binop(&op) {
+                            Some(b) => Expr::Bin(
+                                b,
+                                Box::new(Expr::Index(base.clone(), idx.clone())),
+                                Box::new(rhs),
+                            ),
+                            None => rhs,
+                        };
                         return Ok(Stmt::IndexAssign(*base, *idx, rhs));
                     }
                     return Err(RunError::Parse(String::from("bad index assignment")));
@@ -819,6 +861,20 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, RunError> {
+        // Every level of expression nesting — parens, unary chains, casts/`new`,
+        // and nested indexing — passes through here exactly once, so a single
+        // depth guard bounds all recursive-descent stack growth for expressions.
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth -= 1;
+            return Err(RunError::Parse(String::from("parser nesting too deep")));
+        }
+        let r = self.parse_unary_body();
+        self.depth -= 1;
+        r
+    }
+
+    fn parse_unary_body(&mut self) -> Result<Expr, RunError> {
         if self.is_punct("-") {
             self.pos += 1;
             return Ok(Expr::Neg(Box::new(self.parse_unary()?)));
@@ -984,15 +1040,23 @@ fn name_from_lhs(lhs: &[Tok], name_first: bool) -> String {
     pick.map(|s| (*s).clone()).unwrap_or_default()
 }
 
-fn desugar_compound(op: &str, name: &str, rhs: Expr) -> Expr {
-    let b = match op {
+/// Map a compound-assignment operator (`+=`, `-=`, `*=`, `/=`) to its `BinOp`.
+/// Returns `None` for a plain `=`.
+fn compound_binop(op: &str) -> Option<BinOp> {
+    Some(match op {
         "+=" => BinOp::Add,
         "-=" => BinOp::Sub,
         "*=" => BinOp::Mul,
         "/=" => BinOp::Div,
-        _ => return rhs,
-    };
-    Expr::Bin(b, Box::new(Expr::Var(name.to_string())), Box::new(rhs))
+        _ => return None,
+    })
+}
+
+fn desugar_compound(op: &str, name: &str, rhs: Expr) -> Expr {
+    match compound_binop(op) {
+        Some(b) => Expr::Bin(b, Box::new(Expr::Var(name.to_string())), Box::new(rhs)),
+        None => rhs,
+    }
 }
 
 fn bin_for(p: &str) -> Option<(BinOp, u8)> {

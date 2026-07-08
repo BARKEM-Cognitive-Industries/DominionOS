@@ -576,6 +576,10 @@ impl Tape {
             return None;
         }
         let (n, c) = (lt.shape()[0], lt.shape()[1]);
+        // An empty batch has no valid mean loss; dividing by n=0 would yield NaN.
+        if n == 0 {
+            return None;
+        }
         let d = lt.data();
         let mut loss = 0.0;
         for i in 0..n {
@@ -1102,15 +1106,18 @@ impl Mlp {
         let nlayers = u32::from_le_bytes(take(&mut p, 4)?.try_into().ok()?) as usize;
         let hidden = Activation::from_code(take(&mut p, 1)?[0])?;
         let output = Activation::from_code(take(&mut p, 1)?[0])?;
-        let mut layers = Vec::with_capacity(nlayers);
+        // Do NOT pre-reserve from attacker-controlled counts: a hostile header could
+        // claim huge dimensions and force an OOM abort before any bytes are read.
+        // Let the Vecs grow as `take()` succeeds so a truncated/hostile blob fails fast.
+        let mut layers = Vec::new();
         for _ in 0..nlayers {
             let in_dim = u32::from_le_bytes(take(&mut p, 4)?.try_into().ok()?) as usize;
             let out_dim = u32::from_le_bytes(take(&mut p, 4)?.try_into().ok()?) as usize;
-            let mut w = Vec::with_capacity(in_dim * out_dim);
+            let mut w = Vec::new();
             for _ in 0..in_dim * out_dim {
                 w.push(f64::from_le_bytes(take(&mut p, 8)?.try_into().ok()?));
             }
-            let mut b = Vec::with_capacity(out_dim);
+            let mut b = Vec::new();
             for _ in 0..out_dim {
                 b.push(f64::from_le_bytes(take(&mut p, 8)?.try_into().ok()?));
             }
@@ -1516,17 +1523,13 @@ pub fn awq_calibrate(
             }
         }
 
-        // Simulate INT4 quantization of w_scaled (same as quantize_q4 logic: per-block 4-bit).
-        // Use a simple per-channel min-max quantization for the reconstruction error estimate.
-        let w_q4: Vec<f64> = w_scaled.chunks(out_f).flat_map(|row| {
-            let mx = row.iter().cloned().fold(0.0f64, f64::max);
-            let mn = row.iter().cloned().fold(0.0f64, f64::min);
-            let range = (mx - mn).max(1e-10);
-            row.iter().map(move |&v| {
-                let r = (v - mn) / range * 15.0;
-                let q = round_half_away(r).max(0).min(15) as u8;
-                mn + q as f64 * range / 15.0
-            })
+        // Simulate INT4 quantization of w_scaled with the SAME scheme quantize_q4
+        // deploys: symmetric, single global scale = max|w|/7, q ∈ {−7,…,7}. This makes
+        // the alpha grid search optimize the error of the quantizer actually applied.
+        let mx = w_scaled.iter().fold(0.0f64, |m, &v| m.max(fabs(v)));
+        let s = if mx == 0.0 { 1.0 } else { mx / 7.0 };
+        let w_q4: Vec<f64> = w_scaled.iter().map(|&v| {
+            clamp_q4(round_half_away(v / s)) as f64 * s
         }).collect();
 
         // Reconstruction error: sum_samples ||Q(W·s)·(s⁻¹·x) - W·x||²
@@ -2097,10 +2100,20 @@ impl Optimizer {
 }
 
 /// `base^exp` for a non-negative integer exponent (Adam bias correction).
+/// Exponentiation-by-squaring: `O(log exp)` multiplies rather than `O(exp)`,
+/// so Adam's per-step bias correction stays cheap even at large timesteps.
 fn powf_int(base: f64, exp: i32) -> f64 {
     let mut r = 1.0;
-    for _ in 0..exp {
-        r *= base;
+    let mut b = base;
+    let mut e = if exp < 0 { 0 } else { exp as u32 };
+    while e > 0 {
+        if e & 1 == 1 {
+            r *= b;
+        }
+        e >>= 1;
+        if e > 0 {
+            b *= b;
+        }
     }
     r
 }
@@ -2143,9 +2156,10 @@ pub fn dequantize(q: &QTensor) -> Tensor {
 /// This is the work an NPU/TPU int8 array does; the accumulator is exact `i32`.
 ///
 /// Optimised the same way as the float kernel — **transpose B** for contiguous
-/// streaming and **fixed-lane `i32` accumulators** that vectorise to packed integer
-/// multiply-adds. Integer arithmetic is associative and cannot overflow here
-/// (`|i8·i8|·k ≤ 127·127·k`, well within `i32`), so the result is exact and
+/// streaming and **fixed-lane `i64` accumulators** that vectorise to packed integer
+/// multiply-adds. Integer arithmetic is associative; `i64` accumulators hold
+/// `|i8·i8|·k ≤ 127·127·k` for any realistic contraction dim `k` (an `i32`
+/// accumulator would overflow once `k > 133_151`), so the result is exact and
 /// order-independent.
 pub fn qmatmul(a: &QTensor, b: &QTensor) -> Option<Tensor> {
     if a.shape.len() != 2 || b.shape.len() != 2 || a.shape[1] != b.shape[0] {
@@ -2167,31 +2181,32 @@ pub fn qmatmul(a: &QTensor, b: &QTensor) -> Option<Tensor> {
         let orow = &mut out[i * n..i * n + n];
         for j in 0..n {
             let brow = &bt[j * k..j * k + k];
-            orow[j] = qdot_lanes(arow, brow) as f64 * out_scale;
+            orow[j] = qdot_lanes(arow, brow) as f64 * out_scale;  // i64 acc, no overflow
         }
     }
     Tensor::new(vec![m, n], out)
 }
 
-/// Integer inner product with fixed `i32` lane accumulators (vectorises to packed
-/// integer MACs). Exact and order-independent.
+/// Integer inner product with fixed `i64` lane accumulators (vectorises to packed
+/// integer MACs). Exact and order-independent. `i64` lanes avoid the `i32` overflow
+/// that would occur for contraction dims `k > 133_151` (`127·127·k > i32::MAX`).
 #[inline]
-fn qdot_lanes(x: &[i8], y: &[i8]) -> i32 {
+fn qdot_lanes(x: &[i8], y: &[i8]) -> i64 {
     const LANES: usize = 16;
-    let mut acc = [0i32; LANES];
+    let mut acc = [0i64; LANES];
     let mut cx = x.chunks_exact(LANES);
     let mut cy = y.chunks_exact(LANES);
     for (xc, yc) in cx.by_ref().zip(cy.by_ref()) {
         for l in 0..LANES {
-            acc[l] += xc[l] as i32 * yc[l] as i32;
+            acc[l] += xc[l] as i64 * yc[l] as i64;
         }
     }
-    let mut s = 0i32;
+    let mut s = 0i64;
     for &a in acc.iter() {
         s += a;
     }
     for (&xr, &yr) in cx.remainder().iter().zip(cy.remainder()) {
-        s += xr as i32 * yr as i32;
+        s += xr as i64 * yr as i64;
     }
     s
 }
@@ -2939,17 +2954,23 @@ pub fn qmatmul_per_channel(x: &Tensor, q: &[i8], scales: &[f64], n_in: usize, n_
     let xd = x.data();
     let mut out = vec![0.0f64; m * n_out];
     for i in 0..m {
+        // True dynamic quantization of the activation row: use its own max-abs so
+        // values with |a| > 1 are not clipped/mis-scaled. a_scale = max|a| / 127.
+        let arow = &xd[i * n_in..i * n_in + n_in];
+        let a_max = arow.iter().fold(0.0f64, |mx, &v| mx.max(fabs(v)));
+        let a_scale = if a_max > 0.0 { a_max / 127.0 } else { 1.0 };
+        let a_inv = 1.0 / a_scale;
         for r in 0..n_out {
             let mut acc = 0i32;
             for c in 0..n_in {
-                // Quantize activation element to i8 on the fly (dynamic quant)
-                let ax = xd[i * n_in + c];
-                let aq = round_half_away(ax * 127.0);
+                // Quantize activation element to i8 with the row's dynamic scale.
+                let aq = round_half_away(arow[c] * a_inv);
                 let aq = aq.max(-127).min(127) as i8;
                 acc += (aq as i32) * (q[r * n_in + c] as i32);
             }
-            // Dequantize: activation was scaled by 1/127, weight by scales[r]/127
-            out[i * n_out + r] = acc as f64 * scales[r] / (127.0 * 127.0);
+            // Dequantize: real ≈ q·scale for both operands, so
+            // out = acc · a_scale · scales[r].
+            out[i * n_out + r] = acc as f64 * a_scale * scales[r];
         }
     }
     Tensor::new(vec![m, n_out], out)

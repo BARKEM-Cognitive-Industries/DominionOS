@@ -102,6 +102,54 @@ fn merkle_root(leaves: &[Hash256]) -> Hash256 {
     level[0]
 }
 
+/// The Merkle **authentication path** for the leaf at `index`: the sibling hash at each level,
+/// bottom-up. Built with the exact scheme [`merkle_root`] uses — same node order (left/right by
+/// index parity) and the same odd-node-duplication rule (a lone last node is paired with
+/// itself). Combined with `index`, this path lets a verifier recompute the root from the leaf
+/// alone ([`merkle_root_from_proof`]), proving the leaf is committed at that position.
+fn merkle_proof(leaves: &[Hash256], mut index: usize) -> Vec<Hash256> {
+    let mut proof = Vec::new();
+    let mut level = leaves.to_vec();
+    while level.len() > 1 {
+        let sibling = if index % 2 == 0 {
+            // Left node: sibling is the next leaf, or itself if it is the odd tail (duplicated).
+            if index + 1 < level.len() { level[index + 1] } else { level[index] }
+        } else {
+            // Right node: sibling is the preceding leaf.
+            level[index - 1]
+        };
+        proof.push(sibling);
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        for pair in level.chunks(2) {
+            if pair.len() == 2 {
+                next.push(merkle_node(&pair[0], &pair[1]));
+            } else {
+                next.push(merkle_node(&pair[0], &pair[0]));
+            }
+        }
+        level = next;
+        index /= 2;
+    }
+    proof
+}
+
+/// Recompute the Merkle root from a `leaf`, its `index`, and its authentication `proof`. The
+/// index parity at each level selects whether the running hash is the left or right input to
+/// [`merkle_node`], mirroring [`merkle_proof`]/[`merkle_root`]. Membership holds iff the return
+/// value equals the committed root.
+fn merkle_root_from_proof(leaf: Hash256, mut index: usize, proof: &[Hash256]) -> Hash256 {
+    let mut node = leaf;
+    for sibling in proof {
+        node = if index % 2 == 0 {
+            merkle_node(&node, sibling)
+        } else {
+            merkle_node(sibling, &node)
+        };
+        index /= 2;
+    }
+    node
+}
+
 /// A claimed training run: a commitment (Merkle root) to the sequence of intermediate states,
 /// plus the staked amount that is forfeit if a spot-check exposes a fabricated step.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,11 +162,19 @@ pub struct LearningClaim {
 /// The data a learner reveals to answer one spot-check: consecutive states `k-1` and `k`, so a
 /// verifier can recompute the deterministic transition and confirm it. (In production the
 /// transition proof is a `zkservice`/`vcompute` ZK proof; the structure is identical.)
+///
+/// Both states carry a Merkle **authentication path** into the claim's `states_root`, binding
+/// the revealed transition to the committed trajectory: without them a prover could reveal an
+/// arbitrary `(prev, cur)` pair that merely satisfies `step(prev) == cur` yet was never part of
+/// the committed computation. `prev_path` authenticates the leaf at index `k-1`; `cur_path`
+/// the leaf at index `k`.
 #[derive(Clone, Debug)]
 pub struct StepRevelation {
     pub k: usize,
     pub prev: Vec<u8>,
     pub cur: Vec<u8>,
+    pub prev_path: Vec<Hash256>,
+    pub cur_path: Vec<Hash256>,
 }
 
 /// Proof-of-Learning over a deterministic training transition `step`.
@@ -131,12 +187,49 @@ impl PoL {
         LearningClaim { states_root: merkle_root(&leaves), n_steps: states.len(), stake }
     }
 
-    /// Verify a spot-check: the revealed transition must satisfy `cur == step(prev)`, i.e. the
-    /// claimed state genuinely follows from its predecessor under the (deterministic) training
-    /// step. A fabricated result cannot produce a consistent transition. `step` is the agreed
-    /// training function.
-    pub fn check_step<F: Fn(&[u8]) -> Vec<u8>>(rev: &StepRevelation, step: F) -> bool {
-        rev.k >= 1 && step(&rev.prev) == rev.cur
+    /// Prover side: build the revelation for the transition into state `k` (`1 <= k < len`),
+    /// including the Merkle authentication paths for states `k-1` and `k`. Uses the same tree
+    /// scheme as [`commit`](Self::commit), so the paths verify against the committed
+    /// `states_root`.
+    pub fn reveal(states: &[Vec<u8>], k: usize) -> StepRevelation {
+        let leaves: Vec<Hash256> = states.iter().map(|s| Hash256::of(s)).collect();
+        StepRevelation {
+            k,
+            prev: states[k - 1].clone(),
+            cur: states[k].clone(),
+            prev_path: merkle_proof(&leaves, k - 1),
+            cur_path: merkle_proof(&leaves, k),
+        }
+    }
+
+    /// Verify a spot-check against the committed claim. The revealed transition is accepted only
+    /// when **all** of the following hold, so a valid-looking step cannot be smuggled in outside
+    /// the committed trajectory:
+    ///
+    /// 1. `1 <= k < claim.n_steps` — the indices are in range.
+    /// 2. `prev` is the committed leaf at index `k-1` (its `prev_path` recomputes `states_root`).
+    /// 3. `cur` is the committed leaf at index `k` (its `cur_path` recomputes `states_root`).
+    /// 4. `cur == step(prev)` — the claimed state genuinely follows from its predecessor under
+    ///    the (deterministic) training step.
+    ///
+    /// Any failing check rejects the revelation. `step` is the agreed training function.
+    pub fn check_step<F: Fn(&[u8]) -> Vec<u8>>(claim: &LearningClaim, rev: &StepRevelation, step: F) -> bool {
+        // (1) index range: prev is at k-1, cur is at k, both must be real trajectory positions.
+        if rev.k < 1 || rev.k >= claim.n_steps {
+            return false;
+        }
+        // (2) prev must be the committed leaf at index k-1.
+        let prev_leaf = Hash256::of(&rev.prev);
+        if merkle_root_from_proof(prev_leaf, rev.k - 1, &rev.prev_path) != claim.states_root {
+            return false;
+        }
+        // (3) cur must be the committed leaf at index k.
+        let cur_leaf = Hash256::of(&rev.cur);
+        if merkle_root_from_proof(cur_leaf, rev.k, &rev.cur_path) != claim.states_root {
+            return false;
+        }
+        // (4) and only then is the deterministic transition itself checked.
+        step(&rev.prev) == rev.cur
     }
 }
 
@@ -161,7 +254,7 @@ impl StakedLearning {
     }
     /// Run a spot-check; on failure the stake is slashed and acceptance revoked.
     pub fn spot_check<F: Fn(&[u8]) -> Vec<u8>>(&mut self, rev: &StepRevelation, step: F) -> bool {
-        if PoL::check_step(rev, step) {
+        if PoL::check_step(&self.claim, rev, step) {
             true
         } else {
             self.slashed = true;
@@ -452,26 +545,119 @@ mod tests {
         let s0 = alloc::vec![2u8, 3, 4];
         let s1 = train_step(&s0);
         let s2 = train_step(&s1);
-        let claim = PoL::commit(&[s0.clone(), s1.clone(), s2.clone()], 1000);
+        let states = alloc::vec![s0, s1, s2];
+        let claim = PoL::commit(&states, 1000);
         let mut staked = StakedLearning::accept(claim);
         assert!(staked.is_accepted());
-        let rev = StepRevelation { k: 1, prev: s0, cur: s1 };
+        // Honest revelation with correct Merkle paths for both leaves.
+        let rev = PoL::reveal(&states, 1);
         assert!(staked.spot_check(&rev, train_step));
         assert!(staked.is_accepted());
         assert_eq!(staked.forfeit(), 0);
+        // A later transition (odd/duplicated tail position) also verifies.
+        let mut staked2 = StakedLearning::accept(PoL::commit(&states, 1000));
+        let rev2 = PoL::reveal(&states, 2);
+        assert!(staked2.spot_check(&rev2, train_step));
+        assert!(staked2.is_accepted());
     }
 
     #[test]
     fn pol_slashes_a_fabricated_step() {
         let s0 = alloc::vec![2u8, 3, 4];
-        let claim = PoL::commit(&[s0.clone(), alloc::vec![9, 9, 9]], 1000);
+        let states = alloc::vec![s0, alloc::vec![9, 9, 9]];
+        let claim = PoL::commit(&states, 1000);
         let mut staked = StakedLearning::accept(claim);
-        // The learner reveals a step that does NOT follow from its predecessor.
-        let rev = StepRevelation { k: 1, prev: s0, cur: alloc::vec![9, 9, 9] };
+        // The learner reveals a step that does NOT follow from its predecessor. The states are
+        // genuinely committed (correct paths), but the transition is inconsistent.
+        let rev = PoL::reveal(&states, 1);
         assert!(!staked.spot_check(&rev, train_step));
         assert!(staked.is_slashed());
         assert!(!staked.is_accepted());
         assert_eq!(staked.forfeit(), 1000);
+    }
+
+    #[test]
+    fn pol_rejects_a_step_not_in_the_committed_tree() {
+        // The committed trajectory.
+        let s0 = alloc::vec![2u8, 3, 4];
+        let s1 = train_step(&s0);
+        let s2 = train_step(&s1);
+        let states = alloc::vec![s0.clone(), s1.clone(), s2];
+        let claim = PoL::commit(&states, 1000);
+
+        // A DIFFERENT, valid-looking transition that satisfies step() but was never committed.
+        let f0 = alloc::vec![5u8, 6, 7];
+        let f1 = train_step(&f0);
+        assert_eq!(train_step(&f0), f1); // it is internally consistent…
+
+        // …yet fabricated paths cannot recompute the committed root. Try several forgeries.
+        let forged_empty = StepRevelation {
+            k: 1,
+            prev: f0.clone(),
+            cur: f1.clone(),
+            prev_path: alloc::vec![],
+            cur_path: alloc::vec![],
+        };
+        let mut a = StakedLearning::accept(claim.clone());
+        assert!(!a.spot_check(&forged_empty, train_step));
+        assert!(a.is_slashed());
+
+        // Borrowing the honest paths for foreign leaves also fails (leaf hash won't match).
+        let honest = PoL::reveal(&states, 1);
+        let forged_borrowed = StepRevelation {
+            k: 1,
+            prev: f0,
+            cur: f1,
+            prev_path: honest.prev_path.clone(),
+            cur_path: honest.cur_path.clone(),
+        };
+        let mut b = StakedLearning::accept(claim.clone());
+        assert!(!b.spot_check(&forged_borrowed, train_step));
+        assert!(b.is_slashed());
+
+        // Swapping a real committed state into the wrong index is rejected (position-bound).
+        let swapped = StepRevelation {
+            k: 1,
+            prev: s1, // real state, but it lives at index 1, not k-1 = 0
+            cur: train_step(&s0.clone()),
+            prev_path: honest.prev_path,
+            cur_path: honest.cur_path,
+        };
+        let mut c = StakedLearning::accept(claim);
+        assert!(!c.spot_check(&swapped, train_step));
+        assert!(c.is_slashed());
+    }
+
+    #[test]
+    fn pol_rejects_out_of_range_k() {
+        let s0 = alloc::vec![2u8, 3, 4];
+        let s1 = train_step(&s0);
+        let states = alloc::vec![s0, s1];
+        let claim = PoL::commit(&states, 1000); // n_steps == 2, valid k is exactly 1
+
+        // k == 0 (no predecessor) is rejected.
+        let mut lo = StakedLearning::accept(claim.clone());
+        let rev_lo = StepRevelation {
+            k: 0,
+            prev: alloc::vec![],
+            cur: states[0].clone(),
+            prev_path: alloc::vec![],
+            cur_path: alloc::vec![],
+        };
+        assert!(!lo.spot_check(&rev_lo, train_step));
+        assert!(lo.is_slashed());
+
+        // k == n_steps (past the end) is rejected before any transition check.
+        let mut hi = StakedLearning::accept(claim);
+        let rev_hi = StepRevelation {
+            k: 2,
+            prev: states[1].clone(),
+            cur: train_step(&states[1]),
+            prev_path: alloc::vec![],
+            cur_path: alloc::vec![],
+        };
+        assert!(!hi.spot_check(&rev_hi, train_step));
+        assert!(hi.is_slashed());
     }
 
     #[test]

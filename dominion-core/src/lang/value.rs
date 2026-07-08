@@ -1,6 +1,6 @@
-//! Runtime values for the Aether interpreter.
+//! Runtime values for the Dominion interpreter.
 //!
-//! Beyond the lowest-level primitives, Aether elevates *semantic primitives* to
+//! Beyond the lowest-level primitives, Dominion elevates *semantic primitives* to
 //! first-class citizens (SRS §5.3): [`Value::Identity`] (a cryptographic
 //! principal) and [`Value::Latent`] (a neural-compressed representation for the
 //! generative-storage layer). These are real values the language can pass

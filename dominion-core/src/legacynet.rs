@@ -283,7 +283,7 @@ impl LegacyGateway {
 /// The well-known UDP port the DominionLink overlay rides on.
 pub const DOMINION_UDP_PORT: u16 = 4242;
 
-/// A magic prefix marking an DominionLink overlay datagram.
+/// A magic prefix marking a DominionLink overlay datagram.
 const OVERLAY_MAGIC: &[u8] = b"AETHv1";
 
 /// Encapsulate an overlay message (`id` = the self-certifying DominionId hash, `payload` =
@@ -295,6 +295,12 @@ pub fn encapsulate(src_port: u16, id: &Hash256, payload: &[u8]) -> Vec<u8> {
     // bytes on the wire as the previous two-step path.
     let body_len = OVERLAY_MAGIC.len() + 32 + payload.len();
     let total = 8 + body_len;
+    // The UDP length field is 16-bit; an oversize payload would truncate `total` on the
+    // cast below, emitting a datagram whose length disagrees with the bytes on the wire.
+    debug_assert!(
+        total <= u16::MAX as usize,
+        "overlay datagram exceeds UDP length field"
+    );
     let mut d = Vec::with_capacity(total);
     d.extend_from_slice(&src_port.to_be_bytes());
     d.extend_from_slice(&DOMINION_UDP_PORT.to_be_bytes());

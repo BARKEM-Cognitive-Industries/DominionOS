@@ -119,11 +119,14 @@ impl WorkGraph {
                 done[i] = true;
                 remaining -= 1;
             }
-            // Releasing this wave lowers the in-degree of its dependents.
+            // Releasing this wave lowers the in-degree of its dependents. Decrement once
+            // per matching occurrence so a duplicated dep id (e.g. [0, 0], counted with
+            // multiplicity in indeg above) is fully released rather than stalling.
             for &i in &wave {
                 for j in 0..n {
-                    if !done[j] && self.tasks[j].deps.contains(&i) {
-                        indeg[j] -= 1;
+                    if !done[j] {
+                        let occurrences = self.tasks[j].deps.iter().filter(|&&d| d == i).count();
+                        indeg[j] -= occurrences;
                     }
                 }
             }

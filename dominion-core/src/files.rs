@@ -189,11 +189,17 @@ impl Files {
                         // remove the old subtree.  A plain mkdir would leave all children
                         // orphaned under the old (now unlisted) path — the data-loss bug.
                         rename_dir_recursive(&self.fs, &old, &new)
-                    } else if let Some(content) = self.fs.borrow().read_text(&old) {
-                        self.fs.borrow_mut().write_text(&new, &content).is_ok()
-                            && self.fs.borrow_mut().remove(&old).is_ok()
                     } else {
-                        false
+                        // Read into an owned value first so the immutable borrow is
+                        // dropped before we take the mutable borrows below (an if-let
+                        // scrutinee holds its Ref for the whole block → double-borrow).
+                        let content = self.fs.borrow().read_text(&old);
+                        if let Some(content) = content {
+                            let wrote = self.fs.borrow_mut().write_text(&new, &content).is_ok();
+                            wrote && self.fs.borrow_mut().remove(&old).is_ok()
+                        } else {
+                            false
+                        }
                     };
                     self.dmg_all();
                     if ok { return Some((old, new)); }
@@ -478,22 +484,25 @@ impl Files {
         let l = self.list_area();
         let q = self.search.text();
         let q = q.trim().to_lowercase();
+        // Read the directory once and build the filtered view as (orig_idx, entry)
+        // pairs in a single pass, so there is no per-row position() scan.
         let all_entries = self.fs.borrow().entries(&self.path).unwrap_or_default();
-        let entries: Vec<_> = if q.is_empty() {
-            all_entries.iter().cloned().collect()
-        } else {
-            all_entries.iter().filter(|e| e.name.to_lowercase().contains(q.as_str())).cloned().collect()
-        };
+        let entries: Vec<(usize, _)> = all_entries
+            .iter()
+            .cloned()
+            .enumerate()
+            .filter(|(_, e)| q.is_empty() || e.name.to_lowercase().contains(q.as_str()))
+            .collect();
         if entries.is_empty() {
             let msg = if q.is_empty() { "(empty folder)" } else { "(no matches)" };
             s.push(DrawCmd::Text { rect: Rect::new(l.x + 16, l.y + 16, l.w - 24, 16), text: msg.into(), color: t.muted, size: 13 });
             return;
         }
+        let content_h = entries.len() as i32 * ROW_H + 16;
         // Draw every row at its scrolled position, culling those outside the viewport.
-        let all_entries_ref = self.fs.borrow().entries(&self.path).unwrap_or_default();
-        for (i, e) in entries.iter().enumerate() {
+        for (i, (orig_idx, e)) in entries.iter().enumerate() {
+            let orig_idx = *orig_idx;
             let r = self.row_rect(i);
-            let orig_idx = all_entries_ref.iter().position(|x| x.name == e.name).unwrap_or(i);
             if r.y + r.h <= l.y || r.y >= l.y + l.h {
                 continue; // off-screen
             }
@@ -534,8 +543,8 @@ impl Files {
             };
             s.push(DrawCmd::Text { rect: Rect::new(r.x + r.w - 110, r.y + 7, 104, 16), text: info, color: t.muted, size: 12 });
         }
-        // Scrollbar.
-        s.extend(crate::widgets::scrollbar(l, self.content_h(), l.h, &self.scroll, t));
+        // Scrollbar (reuse the already-computed content height).
+        s.extend(crate::widgets::scrollbar(l, content_h, l.h, &self.scroll, t));
     }
 }
 

@@ -615,7 +615,7 @@ pub fn draw_instanced(
 
 /// A 4-level hierarchical depth buffer for early occlusion culling.
 /// Level 0 = full-resolution depth copy; each subsequent level is a 2×-downsampled
-/// minimum of the level above (conservative — if the HZB says occluded, it is).
+/// maximum of the level above (conservative — if the HZB says occluded, it is).
 pub struct HierarchicalZBuffer {
     pub levels: Vec<Vec<f32>>,
     pub widths: Vec<u32>,
@@ -634,14 +634,14 @@ impl HierarchicalZBuffer {
         widths.push(target.width);
         heights.push(target.height);
 
-        // Levels 1..3: 2× downsampled min-depth.
+        // Levels 1..3: 2× downsampled max-depth.
         for lvl in 1..4 {
             let pw = widths[lvl - 1];
             let ph = heights[lvl - 1];
             let cw = (pw + 1) / 2;
             let ch = (ph + 1) / 2;
             let prev = &levels[lvl - 1];
-            let mut cur = alloc::vec![1.0f32; (cw * ch) as usize];
+            let mut cur = alloc::vec![0.0f32; (cw * ch) as usize];
             for cy in 0..ch {
                 for cx in 0..cw {
                     let px0 = cx * 2;
@@ -652,8 +652,8 @@ impl HierarchicalZBuffer {
                     let s10 = prev[(py0 * pw + px1) as usize];
                     let s01 = prev[(py1 * pw + px0) as usize];
                     let s11 = prev[(py1 * pw + px1) as usize];
-                    // Conservative: take minimum depth (closest = most conservative for culling).
-                    cur[(cy * cw + cx) as usize] = s00.min(s10).min(s01).min(s11);
+                    // Conservative: take maximum depth (farthest = only cull when behind all).
+                    cur[(cy * cw + cx) as usize] = s00.max(s10).max(s01).max(s11);
                 }
             }
             levels.push(cur);
@@ -670,15 +670,19 @@ impl HierarchicalZBuffer {
         let footprint_w = (screen_max.x - screen_min.x).abs();
         let footprint_h = (screen_max.y - screen_min.y).abs();
 
-        // Pick the finest level where the footprint fits in a few texels.
+        let full_w = self.widths[0] as f32;
+        let full_h = self.heights[0] as f32;
+
+        // Pick the coarsest level whose footprint still spans at least ~1 texel.
+        // (Footprint span at level `lvl` is footprint * widths[lvl] / full_w.)
         let mut chosen = 0usize;
         for lvl in 0..self.levels.len() {
-            chosen = lvl;
-            let tw = footprint_w / self.widths[lvl] as f32;
-            let th = footprint_h / self.heights[lvl] as f32;
-            if tw <= 2.0 && th <= 2.0 {
+            let tw = footprint_w * self.widths[lvl] as f32 / full_w;
+            let th = footprint_h * self.heights[lvl] as f32 / full_h;
+            if tw < 1.0 || th < 1.0 {
                 break;
             }
+            chosen = lvl;
         }
 
         let lw = self.widths[chosen];
@@ -686,32 +690,34 @@ impl HierarchicalZBuffer {
         let ldata = &self.levels[chosen];
 
         // Map screen-space min/max into level texel coords.
-        let full_w = self.widths[0] as f32;
-        let full_h = self.heights[0] as f32;
-
         let tx0 = floor32((screen_min.x / full_w) * lw as f32) as i32;
         let ty0 = floor32((screen_min.y / full_h) * lh as f32) as i32;
         let tx1 = ceil32((screen_max.x / full_w) * lw as f32) as i32;
         let ty1 = ceil32((screen_max.y / full_h) * lh as f32) as i32;
 
-        let tx0 = tx0.max(0) as u32;
-        let ty0 = ty0.max(0) as u32;
-        let tx1 = tx1.min(lw as i32) as u32;
-        let ty1 = ty1.min(lh as i32) as u32;
+        let tx0 = tx0.max(0).min(lw as i32) as u32;
+        let ty0 = ty0.max(0).min(lh as i32) as u32;
+        let tx1 = tx1.max(0).min(lw as i32) as u32;
+        let ty1 = ty1.max(0).min(lh as i32) as u32;
 
-        // Find the minimum (nearest) depth value stored in the HZB footprint.
-        let mut hzb_min = 1.0f32;
-        for ty in ty0..ty1.max(ty0 + 1) {
-            for tx in tx0..tx1.max(tx0 + 1) {
+        // Empty footprint (off-screen or past a level edge) → nothing to occlude against.
+        if tx0 >= tx1 || ty0 >= ty1 {
+            return false;
+        }
+
+        // Find the maximum (farthest) depth value stored in the HZB footprint.
+        let mut hzb_max = 0.0f32;
+        for ty in ty0..ty1 {
+            for tx in tx0..tx1 {
                 let d = ldata[(ty * lw + tx) as usize];
-                if d < hzb_min {
-                    hzb_min = d;
+                if d > hzb_max {
+                    hzb_max = d;
                 }
             }
         }
 
-        // Occluded if every stored depth is closer than near_depth.
-        near_depth > hzb_min
+        // Occluded only if the AABB is behind every stored (farthest) surface.
+        near_depth > hzb_max
     }
 
     pub fn level_count(&self) -> usize {

@@ -31,6 +31,9 @@ pub enum SessionError {
     Revoked,
     /// The frame failed authentication (tampered, wrong key, or wrong AAD).
     AuthFailed,
+    /// The frame authenticated but its sequence number was already accepted, or
+    /// falls before the anti-replay window — a replay/reorder-attack indication.
+    Replayed,
 }
 
 /// A published KEM identity: a long-term lattice keypair whose public half is
@@ -90,7 +93,19 @@ pub struct Session {
     expires_at: u64,
     revoked: bool,
     send_seq: u64,
+    /// Highest sequence number accepted by `open` so far (receiver side).
+    recv_high: u64,
+    /// IPsec/ESP-style anti-replay bitmap: bit `d` (for `d` in `0..REPLAY_WINDOW`)
+    /// records whether sequence number `recv_high - d` has already been accepted.
+    /// Bit 0 tracks `recv_high` itself.
+    recv_window: u64,
+    /// Whether any frame has been accepted yet — distinguishes "never received"
+    /// from "received seq 0", so the very first frame (seq 0) is accepted once.
+    received_any: bool,
 }
+
+/// Width of the anti-replay window, in sequence slots (one per bit of `recv_window`).
+const REPLAY_WINDOW: u64 = 64;
 
 /// Bind the ordered identity pair + epoch as GCM associated data, so a frame is
 /// cryptographically pinned to *this* relationship at *this* time.
@@ -145,7 +160,18 @@ impl Session {
         let session_nonce = session_nonce_from_shared(&shared);
         let key = mix(&shared, &local, &remote, &session_nonce);
         Ok((
-            Session { local, remote, key, session_nonce, expires_at, revoked: false, send_seq: 0 },
+            Session {
+                local,
+                remote,
+                key,
+                session_nonce,
+                expires_at,
+                revoked: false,
+                send_seq: 0,
+                recv_high: 0,
+                recv_window: 0,
+                received_any: false,
+            },
             ct,
         ))
     }
@@ -165,7 +191,18 @@ impl Session {
         // KEM exchange (it is bound to the ciphertext), the nonce is likewise unique.
         let session_nonce = session_nonce_from_shared(&shared);
         let key = mix(&shared, &remote, &identity.id, &session_nonce);
-        Session { local: identity.id, remote, key, session_nonce, expires_at, revoked: false, send_seq: 0 }
+        Session {
+            local: identity.id,
+            remote,
+            key,
+            session_nonce,
+            expires_at,
+            revoked: false,
+            send_seq: 0,
+            recv_high: 0,
+            recv_window: 0,
+            received_any: false,
+        }
     }
 
     /// Encrypt `plaintext` into a frame valid at `now`. No plaintext leaves here.
@@ -181,23 +218,71 @@ impl Session {
 
     /// Decrypt a frame received at `now`. Returns `AuthFailed` on any tamper,
     /// including any modification of the `epoch` field in the frame header.
-    pub fn open(&self, now: u64, frame: &Frame) -> Result<Vec<u8>, SessionError> {
+    pub fn open(&mut self, now: u64, frame: &Frame) -> Result<Vec<u8>, SessionError> {
         self.check_live(now)?;
         let aes = Aes::new_256(&self.key);
-        // Authenticate using the epoch carried in the frame, not self.expires_at.
-        // seal() embeds self.expires_at as frame.epoch and uses it as AAD, so both
-        // sides agree when the frame is untampered. If an attacker flips frame.epoch
-        // in transit, the AAD here diverges from what seal() computed, and GCM
-        // authentication fails — returning AuthFailed rather than silently accepting
-        // the manipulated epoch.
-        gcm_decrypt(
+        // Step 1 — GCM authentication FIRST, so a forged frame can never advance the
+        // anti-replay window. Authenticate using the epoch carried in the frame, not
+        // self.expires_at. seal() embeds self.expires_at as frame.epoch and uses it as
+        // AAD, so both sides agree when the frame is untampered. If an attacker flips
+        // frame.epoch in transit, the AAD here diverges from what seal() computed, and
+        // GCM authentication fails — returning AuthFailed rather than silently
+        // accepting the manipulated epoch. On failure we return WITHOUT touching any
+        // receiver replay state.
+        let plaintext = gcm_decrypt(
             &aes,
             &iv_for(frame.seq, &self.session_nonce),
             &aad(&self.local, &self.remote, frame.epoch),
             &frame.ciphertext,
             &frame.tag,
         )
-        .ok_or(SessionError::AuthFailed)
+        .ok_or(SessionError::AuthFailed)?;
+        // Step 2 — the frame is genuine, but a *replayed* genuine frame still
+        // authenticates (its IV/AAD match). Enforce the sliding anti-replay window on
+        // the authenticated sequence number. Only advance state after auth succeeds.
+        self.check_and_record_seq(frame.seq)?;
+        // Step 3 — accepted and fresh: hand back the plaintext.
+        Ok(plaintext)
+    }
+
+    /// Apply the IPsec/ESP-style anti-replay window to an **already-authenticated**
+    /// sequence number. Returns [`SessionError::Replayed`] for a duplicate or a
+    /// too-old frame, otherwise records the sequence and returns `Ok`.
+    fn check_and_record_seq(&mut self, seq: u64) -> Result<(), SessionError> {
+        if !self.received_any {
+            // First accepted frame of the session (seq is typically 0 since seal
+            // starts at 0). Anchor the window here and mark bit 0 as seen.
+            self.received_any = true;
+            self.recv_high = seq;
+            self.recv_window = 1;
+            return Ok(());
+        }
+        if seq > self.recv_high {
+            // Newest frame yet: slide the window up by the gap and set the new high.
+            let shift = seq - self.recv_high;
+            if shift >= REPLAY_WINDOW {
+                // Entire window is now stale; every prior slot falls off the edge.
+                self.recv_window = 0;
+            } else {
+                self.recv_window <<= shift;
+            }
+            self.recv_window |= 1; // bit 0 == the new recv_high
+            self.recv_high = seq;
+            Ok(())
+        } else {
+            // seq <= recv_high: it lands at depth `d` below the high.
+            let d = self.recv_high - seq;
+            if d >= REPLAY_WINDOW {
+                // Older than anything the window can remember — treat as replay.
+                return Err(SessionError::Replayed);
+            }
+            let bit = 1u64 << d;
+            if self.recv_window & bit != 0 {
+                return Err(SessionError::Replayed); // duplicate of an accepted frame
+            }
+            self.recv_window |= bit; // in-window reorder: record and accept
+            Ok(())
+        }
     }
 
     /// Revoke the session immediately; all further seal/open fail.
@@ -284,7 +369,7 @@ mod tests {
         let (alice, bob) = pair();
         let (mut a_sess, ct) =
             Session::initiate(alice.id, bob.id, &bob.public, b"eph-1", 100).unwrap();
-        let b_sess = Session::accept(&bob, alice.id, &ct, 100);
+        let mut b_sess = Session::accept(&bob, alice.id, &ct, 100);
         // Alice seals, Bob opens — identity-bound, encrypted, no plaintext on wire.
         let frame = a_sess.seal(1, b"transfer 42 to savings").unwrap();
         assert_ne!(frame_bytes(&frame), b"transfer 42 to savings");
@@ -304,7 +389,7 @@ mod tests {
     fn tampered_frame_fails_authentication() {
         let (alice, bob) = pair();
         let (mut a, ct) = Session::initiate(alice.id, bob.id, &bob.public, b"e", 100).unwrap();
-        let b = Session::accept(&bob, alice.id, &ct, 100);
+        let mut b = Session::accept(&bob, alice.id, &ct, 100);
         let mut frame = a.seal(1, b"secret").unwrap();
         frame.ciphertext[0] ^= 0xFF;
         assert_eq!(b.open(1, &frame).err(), Some(SessionError::AuthFailed));
@@ -338,7 +423,7 @@ mod tests {
         // An eavesdropper with a different session key gets authentication failure.
         let eve = KemIdentity::generate(b"eve");
         let (_ed, ect) = Session::initiate(eve.id, bob.id, &bob.public, b"e2", 100).unwrap();
-        let eve_sess = Session::accept(&bob, eve.id, &ect, 100);
+        let mut eve_sess = Session::accept(&bob, eve.id, &ect, 100);
         assert!(eve_sess.open(1, &frame).is_err());
     }
 
@@ -373,12 +458,94 @@ mod tests {
         // to return AuthFailed, not silently accept the manipulated value.
         let (alice, bob) = pair();
         let (mut a, ct) = Session::initiate(alice.id, bob.id, &bob.public, b"e", 100).unwrap();
-        let b = Session::accept(&bob, alice.id, &ct, 100);
+        let mut b = Session::accept(&bob, alice.id, &ct, 100);
         let mut frame = a.seal(1, b"secret").unwrap();
         // Flip the epoch to a different value — the AAD used during seal() no longer
         // matches what open() will compute, so GCM authentication must fail.
         frame.epoch ^= 0xDEAD_BEEF_CAFE_BABE;
         assert_eq!(b.open(1, &frame).err(), Some(SessionError::AuthFailed));
+    }
+
+    #[test]
+    fn in_order_stream_all_opens() {
+        // A legitimate in-order stream 0,1,2,3 must all decrypt and be accepted.
+        let (alice, bob) = pair();
+        let (mut a, ct) = Session::initiate(alice.id, bob.id, &bob.public, b"e", 100).unwrap();
+        let mut b = Session::accept(&bob, alice.id, &ct, 100);
+        for i in 0..=3u64 {
+            let msg = [i as u8; 4];
+            let frame = a.seal(1, &msg).unwrap();
+            assert_eq!(frame.seq, i, "seal must number frames from 0");
+            assert_eq!(b.open(1, &frame).unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn replaying_an_opened_frame_is_rejected() {
+        // Capturing a genuine frame and re-injecting it must be caught by the window.
+        let (alice, bob) = pair();
+        let (mut a, ct) = Session::initiate(alice.id, bob.id, &bob.public, b"e", 100).unwrap();
+        let mut b = Session::accept(&bob, alice.id, &ct, 100);
+        let frame = a.seal(1, b"once").unwrap();
+        assert_eq!(b.open(1, &frame).unwrap(), b"once");
+        // Same frame again: authenticates fine, but the window rejects it as replay.
+        assert_eq!(b.open(1, &frame).err(), Some(SessionError::Replayed));
+    }
+
+    #[test]
+    fn reorder_within_window_ok_then_replay_rejected() {
+        // Frames seq 0,1,2 sealed; deliver 0, then 2, then 1 (in-window reorder).
+        let (alice, bob) = pair();
+        let (mut a, ct) = Session::initiate(alice.id, bob.id, &bob.public, b"e", 100).unwrap();
+        let mut b = Session::accept(&bob, alice.id, &ct, 100);
+        let f0 = a.seal(1, b"f0").unwrap();
+        let f1 = a.seal(1, b"f1").unwrap();
+        let f2 = a.seal(1, b"f2").unwrap();
+        assert_eq!(b.open(1, &f0).unwrap(), b"f0");
+        assert_eq!(b.open(1, &f2).unwrap(), b"f2"); // jumps ahead: recv_high = 2
+        assert_eq!(b.open(1, &f1).unwrap(), b"f1"); // fills the in-window gap
+        // Replaying seq 1 now that its bit is set must fail.
+        assert_eq!(b.open(1, &f1).err(), Some(SessionError::Replayed));
+        // Replaying seq 2 as well.
+        assert_eq!(b.open(1, &f2).err(), Some(SessionError::Replayed));
+    }
+
+    #[test]
+    fn frame_older_than_window_is_rejected() {
+        // A frame whose seq is beyond REPLAY_WINDOW below recv_high is too old and
+        // is rejected even though it authenticates.
+        let (alice, bob) = pair();
+        let (mut a, ct) = Session::initiate(alice.id, bob.id, &bob.public, b"e", 100).unwrap();
+        let mut b = Session::accept(&bob, alice.id, &ct, 100);
+        // Seal REPLAY_WINDOW + 1 frames (seq 0 ..= REPLAY_WINDOW). Keep the very
+        // first, then advance the receiver's high watermark past the window.
+        let old = a.seal(1, b"ancient").unwrap();
+        assert_eq!(old.seq, 0);
+        let mut newest = old.clone();
+        for _ in 0..REPLAY_WINDOW {
+            newest = a.seal(1, b"x").unwrap();
+        }
+        assert_eq!(newest.seq, REPLAY_WINDOW);
+        // Accept the newest first: recv_high jumps to REPLAY_WINDOW, so seq 0 is now
+        // at depth REPLAY_WINDOW — exactly off the edge of the window.
+        assert_eq!(b.open(1, &newest).unwrap(), b"x");
+        assert_eq!(b.open(1, &old).err(), Some(SessionError::Replayed));
+    }
+
+    #[test]
+    fn auth_failure_does_not_consume_window_state() {
+        // A tampered (epoch-flipped) frame must fail auth and leave replay state
+        // untouched, so the legitimate frame at the same seq still opens afterwards.
+        let (alice, bob) = pair();
+        let (mut a, ct) = Session::initiate(alice.id, bob.id, &bob.public, b"e", 100).unwrap();
+        let mut b = Session::accept(&bob, alice.id, &ct, 100);
+        let good = a.seal(1, b"secret").unwrap();
+        let mut forged = good.clone();
+        forged.epoch ^= 0xDEAD_BEEF_CAFE_BABE;
+        // Forgery rejected on authentication, not on replay.
+        assert_eq!(b.open(1, &forged).err(), Some(SessionError::AuthFailed));
+        // The genuine frame at the same seq still opens — the forgery consumed no slot.
+        assert_eq!(b.open(1, &good).unwrap(), b"secret");
     }
 
     // Helper: expose the ciphertext bytes for the "no plaintext on wire" assertion.

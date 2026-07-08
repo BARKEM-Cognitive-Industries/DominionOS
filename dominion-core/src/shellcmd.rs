@@ -433,6 +433,11 @@ impl ShellBackend {
             if !recursive {
                 return alloc::vec![err(alloc::format!("cp: -r not specified; omitting directory '{}'", src))];
             }
+            let src_abs = fs.normalize(src);
+            let dst_abs = fs.normalize(&dst);
+            if dst_abs == src_abs || dst_abs.starts_with(&alloc::format!("{}/", src_abs)) {
+                return alloc::vec![err(alloc::format!("cp: cannot copy a directory, '{}', into itself, '{}'", src, dst))];
+            }
             if let Err(e) = copy_tree(&mut fs, src, &dst) {
                 lines.push(err(alloc::format!("cp: {}", e)));
             }
@@ -461,6 +466,11 @@ impl ShellBackend {
         };
         let mut lines = Vec::new();
         if fs.is_dir(src) {
+            let src_abs = fs.normalize(src);
+            let dst_abs = fs.normalize(&dst);
+            if dst_abs == src_abs || dst_abs.starts_with(&alloc::format!("{}/", src_abs)) {
+                return alloc::vec![err(alloc::format!("mv: cannot move a directory, '{}', into itself, '{}'", src, dst))];
+            }
             if let Err(e) = copy_tree(&mut fs, src, &dst) {
                 return alloc::vec![err(alloc::format!("mv: {}", e))];
             }

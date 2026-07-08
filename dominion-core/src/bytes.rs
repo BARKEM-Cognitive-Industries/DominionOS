@@ -27,7 +27,8 @@ impl<'a> Cursor<'a> {
     /// Advance by `n` bytes and return the slice, or `None` if there are fewer
     /// than `n` bytes remaining.
     pub fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let s = self.buf.get(self.pos..self.pos + n)?;
+        let end = self.pos.checked_add(n)?;
+        let s = self.buf.get(self.pos..end)?;
         self.pos += n;
         Some(s)
     }

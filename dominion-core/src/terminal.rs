@@ -59,7 +59,7 @@ pub trait Backend {
 }
 
 /// The default backend: a live **Dominion REPL** with a few builtins (`help`, `echo`,
-/// `ver`). Any other line is evaluated as an Dominion expression.
+/// `ver`). Any other line is evaluated as a Dominion expression.
 #[derive(Default)]
 pub struct DominionBackend;
 

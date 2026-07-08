@@ -193,7 +193,12 @@ pub fn e1000_spec(mmio_base: u64, irq: u32) -> DeviceSpec {
                 // RX descriptor 0 → rx buffer.
                 RegOp::BufStoreVal { buf: E1000_RDRING.into(), off: 0, value: buf(E1000_RXBUF), width: 8 },
                 RegOp::Write { reg: "RDH".into(), value: imm(0) },
-                RegOp::Write { reg: "RDT".into(), value: imm(7) },
+                // Only descriptor 0 has a seeded buffer address, so hand exactly
+                // that one descriptor to hardware (RDH=0, RDT=1). Advertising
+                // RDT=7 would give the NIC descriptors 1..6 whose address field is
+                // 0, DMAing later frames to physical address 0 and corrupting low
+                // memory.
+                RegOp::Write { reg: "RDT".into(), value: imm(1) },
                 RegOp::Write { reg: "RCTL".into(), value: imm(RCTL_EN_BAM) },
             ],
         )

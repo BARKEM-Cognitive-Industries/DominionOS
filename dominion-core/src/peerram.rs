@@ -79,6 +79,16 @@ impl PeerNode {
         Some(bytes)
     }
 
+    /// Remove `id` from the store, freeing its bytes and decrementing
+    /// `ram_used_bytes`. Returns the number of bytes freed, or `None` if the
+    /// object was not present.
+    pub fn remove(&mut self, id: &Hash256) -> Option<usize> {
+        let bytes = self.store.remove(id)?;
+        let len = bytes.len();
+        self.ram_used_bytes = self.ram_used_bytes.saturating_sub(len);
+        Some(len)
+    }
+
     /// Evict the "oldest" object (first BTreeMap key as LRU approximation).
     /// Returns the evicted hash, or `None` if the store is empty.
     pub fn evict_lru(&mut self) -> Option<Hash256> {
@@ -158,11 +168,11 @@ impl PeerRamTier {
     /// Offload `bytes` (identified by `id`) to the least-loaded peer that has
     /// free capacity. Returns `false` if all peers are full.
     pub fn offload(&mut self, id: Hash256, bytes: Vec<u8>) -> bool {
-        let peer_idx = match self.least_loaded_peer() {
+        let len = bytes.len();
+        let peer_idx = match self.least_loaded_peer(len) {
             Some(i) => i,
             None => return false,
         };
-        let len = bytes.len();
         if self.peers[peer_idx].put(id, bytes) {
             self.placement.insert(id, peer_idx);
             self.stats.total_offloads += 1;
@@ -180,8 +190,12 @@ impl PeerRamTier {
         let peer_idx = *self.placement.get(&id)?;
         match self.peers[peer_idx].fetch(id) {
             Some(bytes) => {
+                // Free the peer's copy so its RAM accounting reflects that the
+                // object is now logically back in local RAM.
+                self.peers[peer_idx].remove(&id);
                 self.placement.remove(&id);
                 self.stats.total_fetches += 1;
+                self.stats.total_peer_bytes = self.stats.total_peer_bytes.saturating_sub(bytes.len());
                 Some(bytes)
             }
             None => {
@@ -209,13 +223,15 @@ impl PeerRamTier {
         self.stats.clone()
     }
 
-    /// Returns the peer index with the lowest utilization that still has free
-    /// bytes. Returns `None` when no peer has capacity.
-    fn least_loaded_peer(&self) -> Option<usize> {
+    /// Returns the peer index with the lowest utilization that can still hold an
+    /// object of `needed` bytes. Returns `None` when no peer has room — so a
+    /// low-utilization peer that is nonetheless too small for the object is
+    /// skipped in favour of a more-utilized peer that fits.
+    fn least_loaded_peer(&self, needed: usize) -> Option<usize> {
         let mut best_idx: Option<usize> = None;
         let mut best_util = f64::MAX;
         for (i, peer) in self.peers.iter().enumerate() {
-            if peer.free_bytes() == 0 {
+            if peer.free_bytes() < needed {
                 continue;
             }
             let u = peer.utilization();

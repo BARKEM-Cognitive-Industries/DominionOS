@@ -301,9 +301,13 @@ impl Vault {
     /// The signature is post-quantum verifiable and travels with the object
     /// (authenticity independent of the read capability).
     pub fn seal_signed(&mut self, req: &SignedSeal) -> Option<Hash256> {
+        // Generate the signing keypair *before* persisting anything: keygen is the
+        // only reachable failure point after sealing, so on failure the vault would
+        // otherwise be left holding an orphaned, unsigned object the caller cannot
+        // see or clean up. Doing it first keeps the operation all-or-nothing.
+        let (sk, pk) = req.cal.keygen(req.algo_id, req.signing_seed)?;
         let id =
             self.seal_with(req.suite, req.plaintext, req.key, req.nonce, req.index_key, req.keywords);
-        let (sk, pk) = req.cal.keygen(req.algo_id, req.signing_seed)?;
         let ct = self.objects.get(&id)?.ciphertext.clone();
         let sig = req.cal.sign(req.algo_id, &sk, &ct)?;
         if let Some(obj) = self.objects.get_mut(&id) {

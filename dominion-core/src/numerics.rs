@@ -542,10 +542,20 @@ impl Decimal {
             mant = mant.neg();
         }
         // scale starts as fractional-digit count, adjusted by the exponent.
+        // Reject pathological exponents rather than truncating the i64 scale into
+        // a u32 (which would silently corrupt the magnitude) or growing the
+        // mantissa without bound in the negative-scale branch.
+        const MAX_POW10_SHIFT: i64 = 1_000_000;
         let mut scale = frac_part.len() as i64 - exp;
         if scale < 0 {
+            if -scale > MAX_POW10_SHIFT {
+                return None;
+            }
             mant = mant.mul_pow10((-scale) as u64);
             scale = 0;
+        }
+        if scale > u32::MAX as i64 {
+            return None;
         }
         Some(Decimal { mant, scale: scale as u32 })
     }

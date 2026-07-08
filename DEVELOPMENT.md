@@ -1,6 +1,6 @@
 # Development Setup & Compilation
 
-Getting AetherOS built and running on your machine.
+Getting DominionOS built and running on your machine.
 
 ---
 
@@ -85,13 +85,13 @@ sudo usermod -aG kvm $USER
 
 ---
 
-## Build AetherOS
+## Build DominionOS
 
 ### Clone the Repository
 
 ```bash
-git clone https://github.com/cognitive-industries/aetheros.git
-cd aetheros
+git clone https://github.com/cognitive-industries/dominionos.git
+cd dominionos
 ```
 
 ### Check Your Environment
@@ -126,8 +126,8 @@ cargo build --release
 cargo bootimage --release
 
 # Output files:
-#   aetheros.img    (raw disk image, ~256 MB)
-#   aetheros.iso    (ISO 9660 image, for CD/USB)
+#   dominionos.img    (raw disk image, ~256 MB)
+#   dominionos.iso    (ISO 9660 image, for CD/USB)
 ```
 
 ---
@@ -172,7 +172,7 @@ Edit `run.ps1` or `run.sh` to change:
 Example:
 ```bash
 qemu-system-x86_64 \
-  -drive file=aetheros.img,format=raw \
+  -drive file=dominionos.img,format=raw \
   -smp 8 \                     # 8 cores instead of 4
   -m 8G \                       # 8 GB RAM instead of 4
   -net nic,model=virtio \
@@ -181,7 +181,7 @@ qemu-system-x86_64 \
 
 ### On Real Hardware (Bare Metal)
 
-**WARNING:** Do this only on expendable hardware or in a VM. AetherOS is experimental.
+**WARNING:** Do this only on expendable hardware or in a VM. DominionOS is experimental.
 
 #### Create Bootable USB
 
@@ -192,7 +192,7 @@ Get-Disk | Where-Object {$_.BusType -eq "USB"}
 
 # Create bootable USB (example: F: drive)
 # DESTRUCTIVE: This will erase the USB drive
-.\make-bootable-usb.ps1 -ImagePath aetheros.iso -USBDrive "F:"
+.\make-bootable-usb.ps1 -ImagePath dominionos.iso -USBDrive "F:"
 ```
 
 **Linux/macOS:**
@@ -203,7 +203,7 @@ diskutil list                  # macOS
 
 # Write image to USB (example: /dev/sdb)
 # DESTRUCTIVE: This will erase the USB drive
-sudo dd if=aetheros.iso of=/dev/sdb bs=4M status=progress
+sudo dd if=dominionos.iso of=/dev/sdb bs=4M status=progress
 sudo sync
 ```
 
@@ -274,7 +274,7 @@ rustup component add rust-src
 ```
 
 ### QEMU doesn't boot
-- Ensure `aetheros.img` exists and is ~256 MB
+- Ensure `dominionos.img` exists and is ~256 MB
 - Try adding `-bios /path/to/bios.bin` (platform-specific)
 - On Linux, check KVM is enabled: `kvm-ok`
 
@@ -288,7 +288,7 @@ rustup component add rust-src
 - Or make the script executable: `chmod +x run.ps1`
 
 ### Terminal is unresponsive in QEMU
-- Try typing without seeing output (it's there)
+- Click the QEMU window first to give it input focus
 - Or reboot and try with fewer cores: `cargo run -- -smp 2`
 
 ---
@@ -344,7 +344,7 @@ cargo build --release --features bench
 ### File Structure
 
 ```
-aetheros/
+dominionos/
 ├── kernel/                 # Microkernel (bootloader → scheduler → drivers)
 │   └── src/
 │       ├── main.rs         # Boot entry point

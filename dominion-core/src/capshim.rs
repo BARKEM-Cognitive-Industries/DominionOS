@@ -312,7 +312,7 @@ impl CapShim {
         let path = of.path.clone();
         let offset = of.offset;
         let file_len = self.files.get(&path).map(|f| f.len()).unwrap_or(0);
-        let end = offset + data.len();
+        let end = offset.saturating_add(data.len());
         let growth = end.saturating_sub(file_len) as u64;
         if self.fs_used + growth > quota {
             return Err(ShimError::OutOfMemory);
@@ -340,7 +340,9 @@ impl CapShim {
         let of = self.fds.get_mut(&fd).ok_or(ShimError::BadFd)?;
         let file = self.files.get(&of.path).ok_or(ShimError::BadFd)?;
         let start = of.offset.min(file.len());
-        let stop = (start + len).min(file.len());
+        // `len` is guest-supplied: saturate the add so a huge count can't wrap
+        // (release) or overflow-panic (debug) and produce an inverted range.
+        let stop = start.saturating_add(len).min(file.len());
         let out = file[start..stop].to_vec();
         of.offset = stop;
         Ok(out)

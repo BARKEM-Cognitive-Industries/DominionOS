@@ -255,6 +255,42 @@ where
     }
 }
 
+/// Map the LAPIC MMIO page as strong-uncacheable.
+///
+/// The bootloader's full-physical map already covers this VA as write-back, so
+/// `map_to` returns `PageAlreadyMapped` and the plain `map_page` helper would
+/// silently keep that cacheable mapping — LAPIC register reads (delivery-status
+/// polling at 0x300, `lapic_id` at 0x20) could then observe stale cache lines,
+/// working only when firmware MTRRs force UC on the APIC page. Here we explicitly
+/// rewrite the existing entry's flags to NO_CACHE instead of ignoring the
+/// already-mapped case.
+fn map_lapic_uncached<M, A>(mapper: &mut M, fa: &mut A, virt: u64, phys: u64)
+where
+    M: Mapper<Size4KiB>,
+    A: FrameAllocator<Size4KiB>,
+{
+    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(virt));
+    let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys));
+    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_CACHE;
+    unsafe {
+        match mapper.map_to(page, frame, flags, fa) {
+            Ok(t) => t.flush(),
+            // Already mapped (write-back) by the bootloader — rewrite the flags so
+            // NO_CACHE actually takes effect rather than relying on MTRRs.
+            Err(MapToError::PageAlreadyMapped(_)) => match mapper.update_flags(page, flags) {
+                Ok(t) => t.flush(),
+                Err(_) => serial_println!("[smp] warning: could not set LAPIC page uncached"),
+            },
+            // Covered by a huge page: a 4KiB flag update can't be applied here, so
+            // fall back to MTRR-provided UC and warn.
+            Err(MapToError::ParentEntryHugePage) => {
+                serial_println!("[smp] warning: LAPIC in huge-page map; NO_CACHE not applied")
+            }
+            Err(_) => serial_println!("[smp] warning: map_to failed for LAPIC virt {:#x}", virt),
+        }
+    }
+}
+
 unsafe fn write_trampoline(phys_offset: u64, cr3: u64, entry: u64) {
     let start = core::ptr::addr_of!(tramp_start);
     let end = core::ptr::addr_of!(tramp_end);
@@ -357,13 +393,7 @@ where
 
     // Map the LAPIC MMIO (uncached) and the trampoline page (identity).
     let lapic_virt = phys_offset + lapic_base;
-    map_page(
-        mapper,
-        fa,
-        lapic_virt,
-        lapic_base,
-        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_CACHE,
-    );
+    map_lapic_uncached(mapper, fa, lapic_virt, lapic_base);
     LAPIC_VADDR.store(lapic_virt, Ordering::SeqCst);
     // W^X fix: write the trampoline code FIRST via the physical-offset alias
     // (already mapped RW by the bootloader), THEN map the identity page as

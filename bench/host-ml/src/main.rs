@@ -25,18 +25,19 @@ use dominion_core::ml::{
     quantize_q4, quantize_tern, recommend_device, reconstruct_delta, ring_allreduce_cost,
     scaffold_correct_start, scaffold_update_control, smooth_quant_apply, smooth_quant_scales,
     sparsify_delta, speculative_infer_batch, ternmatmul, turboquant_compress,
-    turboquant_decompress, turboquant_dot, Activation, CalibStats, ComputeBandit,
+    turboquant_dot, Activation, CalibStats, ComputeBandit,
     Device, GptqCalib, LoraAdapter, Mlp, MlConfig, Optimizer, Precision, ALL_PRECISIONS,
 };
 use dominion_core::nn::{
     NnConfig, NormKind, FfnAct,
 };
-use dominion_core::nn::norm::{RmsNorm, LayerNorm};
-use dominion_core::nn::attention::{MultiHeadAttention, KvCache};
+use dominion_core::nn::norm::{rms_norm, layer_norm};
+// MultiHeadAttention was stripped from dominion-core in the public-release cleanup;
+// KvCache still exists but the MHA bench section that used it has been removed.
 use dominion_core::nn::arch::transformer::TransformerBlock;
 use dominion_core::nn::arch::moe::MoeLayer;
 use dominion_core::nn::arch::cnn::{BasicBlock, BottleneckBlock};
-use dominion_core::nn::recurrent::{LstmCell, GruCell};
+// recurrent (LstmCell/GruCell) was stripped in the public-release cleanup.
 use dominion_core::nn::sample::{SamplerConfig, run_sampler};
 use dominion_core::nn::tokenizer::BpeTokenizer;
 use dominion_core::parallel::Spawn;
@@ -88,6 +89,7 @@ struct PooledInner {
     n:        AtomicU64,   // tasks in current batch
     next:     AtomicU64,   // next task index to claim
     done:     AtomicU64,   // completed tasks
+    active:   AtomicU64,   // workers currently inside a batch's claim loop
     fp_data:  AtomicU64,   // fat pointer data word
     fp_vtbl:  AtomicU64,   // fat pointer vtable word
     res_ptr:  AtomicU64,   // *mut Vec<f64> base (index 0 of results slice)
@@ -112,6 +114,7 @@ impl PooledSpawn {
         let inner = Arc::new(PooledInner {
             gen: AtomicU64::new(0), n: AtomicU64::new(0),
             next: AtomicU64::new(0), done: AtomicU64::new(0),
+            active: AtomicU64::new(0),
             fp_data: AtomicU64::new(0), fp_vtbl: AtomicU64::new(0),
             res_ptr: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
@@ -132,9 +135,17 @@ impl PooledSpawn {
                     let g = s.gen.load(Ordering::Acquire);
                     if g == last_gen { continue; } // spurious wakeup
                     last_gen = g;
+                    // Mark ourselves active for batch `g` *before* reading any batch
+                    // state: the BSP will not recycle next/done/n/res_ptr/fp for the
+                    // following batch until active drops to 0, so a worker stalled
+                    // here can never claim a foreign batch's index against a stale `n`.
+                    s.active.fetch_add(1, Ordering::AcqRel);
                     let n = s.n.load(Ordering::Acquire) as usize;
                     // Claim and execute tasks via atomic counter.
                     loop {
+                        // Bail the instant the batch moves on: n, res_ptr and fp all
+                        // belong to batch `g` only, so never fetch_add past its end.
+                        if s.gen.load(Ordering::Acquire) != g { break; }
                         let idx = s.next.fetch_add(1, Ordering::AcqRel) as usize;
                         if idx >= n { break; }
                         // SAFETY: fat pointer is valid for the BSP's run() duration;
@@ -152,6 +163,8 @@ impl PooledSpawn {
                         }
                         s.done.fetch_add(1, Ordering::AcqRel);
                     }
+                    // Left batch `g`; the BSP may now recycle shared state.
+                    s.active.fetch_sub(1, Ordering::AcqRel);
                 }
             })
         }).collect();
@@ -164,6 +177,15 @@ impl PooledSpawn {
 impl Drop for PooledSpawn {
     fn drop(&mut self) {
         self.inner.shutdown.store(true, Ordering::SeqCst);
+        // Workers sleep in park() between batches and only test `shutdown` right
+        // after an unpark, so wake them, then join — otherwise they park forever
+        // and the detached JoinHandles leak the OS threads.
+        for t in &self.thread_handles {
+            t.unpark();
+        }
+        for h in std::mem::take(&mut self._guards) {
+            let _ = h.join();
+        }
     }
 }
 
@@ -175,6 +197,12 @@ impl Spawn for PooledSpawn {
         let mut results: Vec<Vec<f64>> = (0..n).map(|_| Vec::new()).collect();
         let fp: [usize; 2] = unsafe { std::mem::transmute(task) };
         let base = results.as_mut_ptr();
+        // Do not recycle shared batch state until every worker from the previous
+        // batch has left its claim loop; otherwise a stalled worker could claim an
+        // index or write a result slot against the previous batch's n/res_ptr.
+        while self.inner.active.load(Ordering::Acquire) != 0 {
+            std::hint::spin_loop();
+        }
         self.inner.fp_data.store(fp[0] as u64, Ordering::Release);
         self.inner.fp_vtbl.store(fp[1] as u64, Ordering::Release);
         self.inner.res_ptr.store(base as u64, Ordering::Release);
@@ -354,6 +382,13 @@ unsafe fn dot_avx2_fma_impl(x: &[f64], y: &[f64]) -> f64 {
         a0 = _mm256_fmadd_pd(_mm256_loadu_pd(xp.add(rem)), _mm256_loadu_pd(yp.add(rem)), a0);
         rem += 4;
     }
+    // Scalar tail: the final 1-3 elements when n is not a multiple of 4, folded
+    // into the reduced result below so they are never silently dropped.
+    let mut tail = 0.0f64;
+    while rem < n {
+        tail = (*xp.add(rem)).mul_add(*yp.add(rem), tail);
+        rem += 1;
+    }
     // Tree-reduce 8 accumulators.
     a0 = _mm256_add_pd(a0, a4); a1 = _mm256_add_pd(a1, a5);
     a2 = _mm256_add_pd(a2, a6); a3 = _mm256_add_pd(a3, a7);
@@ -364,7 +399,7 @@ unsafe fn dot_avx2_fma_impl(x: &[f64], y: &[f64]) -> f64 {
     let hi = _mm256_extractf128_pd(a0, 1);
     let s  = _mm_add_pd(lo, hi);
     let sh = _mm_shuffle_pd(s, s, 1);
-    _mm_cvtsd_f64(_mm_add_pd(s, sh))
+    _mm_cvtsd_f64(_mm_add_pd(s, sh)) + tail
 }
 
 /// Runtime-dispatched dot: uses explicit AVX-2+FMA if available, else dot_fma.
@@ -2285,77 +2320,30 @@ fn main() {
         );
     }
 
-    // ── Norm operators: RMSNorm, LayerNorm ────────────────────────────────────────
+    // ── Norm operators: rms_norm, layer_norm (dominion-core free functions) ────────
     {
         let d = 512usize;
         let batch = 256usize;
         let iters = 5000usize;
-        let x = Tensor::new(vec![batch, d], (0..batch*d).map(|i| (i as f64) / (batch*d) as f64 - 0.5).collect()).unwrap();
+        let x: Vec<f64> = (0..batch*d).map(|i| (i as f64) / (batch*d) as f64 - 0.5).collect();
+        let w = vec![1.0f64; d];
+        let b = vec![0.0f64; d];
 
-        let rn = RmsNorm::new(d, 1e-6);
         let t0 = Instant::now();
-        for _ in 0..iters { let _ = rn.forward(&x).unwrap(); }
+        for _ in 0..iters { let _ = rms_norm(&x, &w, 1e-6, d); }
         let rmsnorm_us = t0.elapsed().as_micros() as f64 / iters as f64;
 
-        let ln = LayerNorm::new(d, 1e-6);
         let t1 = Instant::now();
-        for _ in 0..iters { let _ = ln.forward(&x).unwrap(); }
+        for _ in 0..iters { let _ = layer_norm(&x, &w, &b, 1e-6, d); }
         let layernorm_us = t1.elapsed().as_micros() as f64 / iters as f64;
 
         println!("BENCH nn_norm batch={} d={} iters={} rmsnorm_us={:.1} layernorm_us={:.1} ratio={:.2}x",
             batch, d, iters, rmsnorm_us, layernorm_us, layernorm_us / rmsnorm_us.max(0.001));
     }
 
-    // ── MultiHeadAttention: standard vs FlashAttention CPU ────────────────────────
-    {
-        let seq = 128usize;
-        let d_model = 256usize;
-        let n_heads = 8usize;
-        let iters = 200usize;
-        let x = Tensor::new(vec![seq, d_model], vec![0.01f64; seq * d_model]).unwrap();
-
-        // Full MHA (standard attention)
-        let mha_std = MultiHeadAttention::new(d_model, n_heads, n_heads, 0xAB_CD_0001).unwrap();
-        let t0 = Instant::now();
-        for _ in 0..iters {
-            let _ = mha_std.forward(&x, None, None, true, 0).unwrap();
-        }
-        let std_us = t0.elapsed().as_micros() as u64 / iters as u64;
-
-        // With FlashAttention CPU (block_size=32)
-        let t1 = Instant::now();
-        for _ in 0..iters {
-            let _ = mha_std.forward(&x, None, None, true, 32).unwrap();
-        }
-        let flash_us = t1.elapsed().as_micros() as u64 / iters as u64;
-
-        // GQA: 8 query heads, 2 KV heads (4x GQA ratio — Gemma 4 E2B style)
-        let mha_gqa = MultiHeadAttention::new(d_model, n_heads, 2, 0xEF_01_0002).unwrap();
-        let t2 = Instant::now();
-        for _ in 0..iters {
-            let _ = mha_gqa.forward(&x, None, None, true, 32).unwrap();
-        }
-        let gqa_us = t2.elapsed().as_micros() as u64 / iters as u64;
-
-        println!("BENCH nn_attention seq={} d={} n_heads={} iters={} std_us={} flash_us={} gqa_us={} flash_speedup={:.2}x gqa_vs_std={:.2}x",
-            seq, d_model, n_heads, iters, std_us, flash_us, gqa_us,
-            std_us as f64 / flash_us.max(1) as f64,
-            std_us as f64 / gqa_us.max(1) as f64);
-
-        // KV cache: decode mode (1 new token, cached prefix)
-        let mut kv = KvCache::new(256, n_heads, d_model / n_heads);
-        // prefill 64 tokens
-        let prefix = Tensor::new(vec![64, d_model], vec![0.01f64; 64 * d_model]).unwrap();
-        let _ = mha_std.forward(&prefix, Some(&mut kv), None, true, 32).unwrap();
-        let t3 = Instant::now();
-        let one_tok = Tensor::new(vec![1, d_model], vec![0.01f64; d_model]).unwrap();
-        for _ in 0..iters {
-            let mut kv2 = kv.clone();
-            let _ = mha_std.forward(&one_tok, Some(&mut kv2), None, true, 32).unwrap();
-        }
-        let decode_us = t3.elapsed().as_micros() as u64 / iters as u64;
-        println!("BENCH nn_kv_cache prefill_seq=64 decode_tok=1 decode_us={}", decode_us);
-    }
+    // ── MultiHeadAttention / KvCache bench removed: the MultiHeadAttention struct was
+    //    stripped from dominion-core in the public-release cleanup. FlashAttention is
+    //    still exercised by the `flash_attention` bench section above.
 
     // ── TransformerBlock: Llama-style (SwiGLU + RMSNorm + GQA) ───────────────────
     {
@@ -2433,28 +2421,8 @@ fn main() {
             batch, h, w, iters, basic_us, bottle_us);
     }
 
-    // ── RNN/LSTM/GRU ──────────────────────────────────────────────────────────────
-    {
-        let input_sz = 64usize;
-        let hidden_sz = 128usize;
-        let seq_len = 32usize;
-        let iters = 500usize;
-        let x = Tensor::new(vec![seq_len, input_sz], vec![0.01f64; seq_len * input_sz]).unwrap();
-
-        let lstm = LstmCell::new(input_sz, hidden_sz, 0xABCD_0001);
-        let t0 = Instant::now();
-        for _ in 0..iters { let _ = lstm.forward(&x).unwrap(); }
-        let lstm_us = t0.elapsed().as_micros() as u64 / iters as u64;
-
-        let gru = GruCell::new(input_sz, hidden_sz, 0x1234_0001);
-        let t1 = Instant::now();
-        for _ in 0..iters { let _ = gru.forward(&x).unwrap(); }
-        let gru_us = t1.elapsed().as_micros() as u64 / iters as u64;
-
-        println!("BENCH nn_recurrent input={} hidden={} seq={} iters={} lstm_us={} gru_us={} gru_vs_lstm={:.2}x",
-            input_sz, hidden_sz, seq_len, iters, lstm_us, gru_us,
-            lstm_us as f64 / gru_us.max(1) as f64);
-    }
+    // ── RNN/LSTM/GRU bench removed: the nn::recurrent module (LstmCell/GruCell) was
+    //    stripped to a stub in the public-release cleanup.
 
     // ── GPTQ calibration + quantization ───────────────────────────────────────────
     {

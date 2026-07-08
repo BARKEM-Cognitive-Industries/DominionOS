@@ -1050,14 +1050,20 @@ pub fn translate_scene(scene: &mut [DrawCmd], dx: i32, dy: i32) {
                     p.1 += dy;
                 }
             }
-            // 3D / GPU commands carry no 2D coordinates to translate.
-            DrawCmd::Mesh3D { .. }
-            | DrawCmd::VectorPath { .. }
-            | DrawCmd::GpuText { .. }
-            | DrawCmd::MediaBuffer { .. }
-            | DrawCmd::Scene3D { .. }
-            | DrawCmd::Particles { .. }
-            | DrawCmd::SdfShadow { .. } => {}
+            // 3D / GPU commands each carry a screen-space rect/viewport that must
+            // be translated along with the 2D commands.
+            DrawCmd::Mesh3D { viewport, .. } | DrawCmd::Scene3D { viewport, .. } => {
+                viewport.x += dx;
+                viewport.y += dy;
+            }
+            DrawCmd::VectorPath { rect, .. }
+            | DrawCmd::GpuText { rect, .. }
+            | DrawCmd::MediaBuffer { rect, .. }
+            | DrawCmd::Particles { rect, .. }
+            | DrawCmd::SdfShadow { rect, .. } => {
+                rect.x += dx;
+                rect.y += dy;
+            }
         }
     }
 }

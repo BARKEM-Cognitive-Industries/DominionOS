@@ -52,9 +52,11 @@ pub enum PressureLevel {
 impl PressureLevel {
     /// Classify a prospective `used`/`cap` ratio into a tier.
     pub fn from_ratio(used: usize, cap: usize) -> PressureLevel {
-        if cap == 0 || used * 10 < cap * 7 {
+        // Widen to u128 before scaling so large byte budgets can't overflow the
+        // multiply (an unchecked `used * 10` wraps/panics above ~1.8e18 on 64-bit).
+        if cap == 0 || (used as u128) * 10 < (cap as u128) * 7 {
             PressureLevel::Comfortable
-        } else if used * 10 < cap * 9 {
+        } else if (used as u128) * 10 < (cap as u128) * 9 {
             PressureLevel::Tight
         } else {
             PressureLevel::Critical
@@ -123,7 +125,7 @@ const TARGETS: [PlacementTarget; 6] = [
 ];
 
 impl PlacementTarget {
-    /// Map an Dominion placement decorator (`@CPU`/`@GPU`/`@NPU`) to its target — used
+    /// Map a Dominion placement decorator (`@CPU`/`@GPU`/`@NPU`) to its target — used
     /// as the *prior* the bandit then corrects under real pressure.
     pub fn from_decorator(decorator: &str) -> Option<PlacementTarget> {
         match decorator.trim_start_matches('@').to_ascii_uppercase().as_str() {

@@ -140,7 +140,10 @@ impl Bvh {
 
     /// Returns the indices of instances whose `world_aabb` intersects the frustum.
     pub fn frustum_cull<'a>(&self, instances: &'a [Instance], frustum: &Frustum) -> Vec<usize> {
-        if self.nodes.is_empty() {
+        // Guard the empty-scene sentinel: `build(&[])` stores a placeholder leaf
+        // (instance_idx 0) rather than an empty node list, so short-circuit here
+        // to avoid returning a phantom out-of-bounds index for no instances.
+        if self.nodes.is_empty() || instances.is_empty() {
             return Vec::new();
         }
         let mut result = Vec::new();

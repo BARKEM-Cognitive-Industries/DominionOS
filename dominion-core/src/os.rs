@@ -388,11 +388,14 @@ impl Os {
                 // tiered memory manager can track and enforce its per-app quota.
                 // Default quota: 32 MiB — enough for a typical GUI app's working set.
                 const APP_MEMORY_QUOTA: usize = 32 * 1024 * 1024;
-                self.mem_manager.add_domain(*app as u64, APP_MEMORY_QUOTA);
+                // Domain 0 is reserved for the shared kernel/fs domain (see
+                // persist_fs_to / set_metrics), so app domain ids are offset by 1
+                // to guarantee they can never alias it (AppId::Desktop == 0).
+                self.mem_manager.add_domain(app_domain_id(*app), APP_MEMORY_QUOTA);
                 // Also register the domain in the RAM dedup index so shared objects
                 // (fonts, images, model shards) that appear in multiple apps are
                 // deduplicated to a single physical resident copy.
-                self.ram_dedup.add_domain(*app as u64);
+                self.ram_dedup.add_domain(app_domain_id(*app));
             }
         }
         let closed: Vec<AppId> =
@@ -402,8 +405,8 @@ impl Os {
                 self.sched.borrow_mut().kill(id);
                 // Task 2: tear down the app's memory domain and release its dedup
                 // references so objects held only by this app are freed promptly.
-                self.mem_manager.remove_domain(app as u64);
-                self.ram_dedup.release_domain(app as u64);
+                self.mem_manager.remove_domain(app_domain_id(app));
+                self.ram_dedup.release_domain(app_domain_id(app));
             }
         }
     }
@@ -2097,6 +2100,14 @@ fn union_opt(d: Option<Rect>, r: Rect) -> Option<Rect> {
 /// A per-app `(base, length)` capability region for its process domain. The length is a
 /// plausible memory footprint shown in the Task Manager; the base is unique per app so
 /// regions never overlap the seeded system domains or each other.
+// Map an AppId to its memory/dedup domain id. Offset by 1 so an app can never
+// alias domain 0, which is reserved for the shared kernel/fs domain (see
+// persist_fs_to and set_metrics). AppId::Desktop casts to 0, so the raw cast
+// would otherwise collide with the kernel domain.
+fn app_domain_id(app: AppId) -> u64 {
+    1 + app as u64
+}
+
 fn proc_region(app: AppId) -> (u64, u64) {
     let mb = 1024 * 1024;
     let len = match app {
@@ -2311,6 +2322,36 @@ mod tests {
         // In the Terminal, digits type into the command line (not switch apps).
         o.on_key('2');
         assert_eq!(o.active(), AppId::Terminal);
+    }
+
+    #[test]
+    fn typing_a_command_into_the_focused_terminal_runs_it_end_to_end() {
+        // End-to-end shell input routing: opening the Terminal and typing through the
+        // top-level `Os::on_key` (the exact call the kernel desktop loop makes) must feed
+        // the terminal's command line, and Enter must run the command through the real
+        // ShellBackend so its output renders in the scene. This guards the GUI input path
+        // the desktop docs once flagged as "frozen".
+        let mut o = os();
+        o.on_key('4'); // open + focus the Terminal
+        assert_eq!(o.active(), AppId::Terminal);
+        // Type `pwd` and submit. `pwd`'s output ("/home/jayden") differs from the echoed
+        // input line, so finding it in the render proves the command actually executed
+        // rather than merely being echoed.
+        for ch in "pwd".chars() {
+            o.on_key(ch);
+        }
+        // The typed characters must appear on the live command line before submitting.
+        let s = o.view(1440, 760);
+        assert!(s.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text.ends_with("$ pwd"))));
+        o.on_key('\n');
+        let s = o.view(1440, 760);
+        assert!(
+            s.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "/home/jayden")),
+            "pwd output should render in the terminal scrollback",
+        );
+        // Enter cleared the command line: the live prompt (a trailing "$ ") no longer
+        // carries the typed text, so its text ends at the prompt sigil.
+        assert!(s.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text.ends_with("jayden$ "))));
     }
 
     #[test]

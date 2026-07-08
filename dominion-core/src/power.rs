@@ -96,7 +96,7 @@ impl Battery {
     }
 
     pub fn recharge(&mut self, e: Energy) {
-        self.charge = (self.charge + e).min(self.capacity);
+        self.charge = self.charge.saturating_add(e).min(self.capacity);
     }
 }
 

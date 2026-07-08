@@ -451,13 +451,16 @@ fn resize(r: Rect, e: Edges, px: i32, py: i32, area: Rect) -> Rect {
         x0 = px.clamp(area.x, x1 - MIN_W);
     }
     if e.r {
-        x1 = px.clamp(x0 + MIN_W, area.x + area.w);
+        // Guard against an inverted clamp range: when the work area is narrower
+        // than MIN_W, area.x + area.w can fall below x0 + MIN_W, and i32::clamp
+        // panics if min > max. Mirror clamp_frame and keep max >= min.
+        x1 = px.clamp(x0 + MIN_W, (area.x + area.w).max(x0 + MIN_W));
     }
     if e.t {
         y0 = py.clamp(area.y, y1 - MIN_H);
     }
     if e.b {
-        y1 = py.clamp(y0 + MIN_H, area.y + area.h);
+        y1 = py.clamp(y0 + MIN_H, (area.y + area.h).max(y0 + MIN_H));
     }
     Rect::new(x0, y0, x1 - x0, y1 - y0)
 }

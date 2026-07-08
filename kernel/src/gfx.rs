@@ -548,7 +548,7 @@ impl Screen {
 
             // Accumulate a contiguous run of 2D non-text commands.
             let start = i;
-            while i < scene.len() && !matches!(scene[i], DrawCmd::Text { .. }) && !is_gpu_only_cmd(&scene[i]) {
+            while i < scene.len() && !matches!(scene[i], DrawCmd::Text { .. }) && !matches!(scene[i], DrawCmd::Mesh3D { .. }) && !is_gpu_only_cmd(&scene[i]) {
                 i += 1;
             }
             if i > start {

@@ -212,6 +212,17 @@ impl MemoryManager {
         dirty: bool,
     ) -> (Hash256, OomAction) {
         let byte_len = bytes.len();
+
+        // Reject unknown domains *before* interning. Interning here would bump the
+        // registry refcount with no domain view able to ever release it (only
+        // DomainMemoryView::release_all frees registry refs), leaking the object
+        // for the manager's lifetime — repeated admits to a bad domain would
+        // accumulate unbounded memory.
+        if !self.domains.contains_key(&domain_id) {
+            self.stats.total_admits += 1;
+            return (Hash256::of(&bytes), OomAction::Critical);
+        }
+
         let (hash, was_new) = self.registry.intern(bytes);
 
         if !was_new {
@@ -297,7 +308,7 @@ impl MemoryManager {
         let mut result = [Pressure::Low; 5];
         for i in 0..5 {
             if self.tier_quotas[i] > 0
-                && self.tier_used[i] * 10 >= self.tier_quotas[i] * 9
+                && (self.tier_used[i] as u128) * 10 >= (self.tier_quotas[i] as u128) * 9
             {
                 result[i] = Pressure::High;
             }

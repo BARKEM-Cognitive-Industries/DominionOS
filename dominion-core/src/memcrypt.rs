@@ -401,8 +401,9 @@ pub fn salt_from_label(label: &[u8]) -> u64 {
 /// # Nonce construction
 ///
 /// The 96-bit AES-GCM IV is split as:
-///   bytes  0..8  — big-endian per-reseal counter (starts at 1, increments on every reseal)
-///   bytes  8..12 — low 32 bits of `region_salt` (big-endian)
+///   bytes  0..4  — big-endian per-reseal counter (starts at 1, increments on every
+///                  reseal; up to 2^32 reseals per region before it wraps)
+///   bytes  4..12 — the full 64-bit `region_salt` (big-endian)
 ///
 /// Two `SealedRegion` instances that share the same encryption key **must** be
 /// constructed with distinct `region_salt` values; otherwise they would both start
@@ -412,7 +413,7 @@ pub fn salt_from_label(label: &[u8]) -> u64 {
 pub struct SealedRegion {
     key: [u8; 32],
     nonce_ctr: u64,
-    /// Per-region salt baked into the upper 32 bits of the IV.  Must be distinct
+    /// Per-region salt baked into the low 8 bytes of the IV.  Must be distinct
     /// across all `SealedRegion` instances that share the same `key`.
     region_salt: u64,
     iv: [u8; 12],
@@ -457,12 +458,23 @@ impl SealedRegion {
 
     fn next_iv(&mut self) -> [u8; 12] {
         self.nonce_ctr += 1;
+        // A 12-byte IV cannot hold both a full 64-bit counter and a full 64-bit
+        // salt, so we spend 4 bytes on the counter and the remaining 8 on the
+        // *entire* salt. Binding all 64 bits of the salt is what prevents the
+        // catastrophic nonce reuse that a low-32-bit-only salt allowed: two salts
+        // colliding only above bit 32 no longer produce an identical (key, IV).
+        // The cost is a 2^32-reseal ceiling per region before the counter wraps.
+        debug_assert!(
+            self.nonce_ctr <= u32::MAX as u64,
+            "SealedRegion: exceeded 2^32 reseals for one region; nonce counter wrapped"
+        );
         let mut iv = [0u8; 12];
-        // Bytes 0..8: big-endian per-reseal counter — unique within this region.
-        iv[..8].copy_from_slice(&self.nonce_ctr.to_be_bytes());
-        // Bytes 8..12: low 32 bits of the per-region salt — unique across regions
-        // that share the same key, preventing cross-region nonce collisions.
-        iv[8..12].copy_from_slice(&(self.region_salt as u32).to_be_bytes());
+        // Bytes 0..4: big-endian per-reseal counter (low 32 bits) — unique within
+        // this region across up to 2^32 reseals.
+        iv[..4].copy_from_slice(&(self.nonce_ctr as u32).to_be_bytes());
+        // Bytes 4..12: the full 64-bit per-region salt — unique across regions that
+        // share the same key, preventing cross-region nonce collisions.
+        iv[4..12].copy_from_slice(&self.region_salt.to_be_bytes());
         iv
     }
 

@@ -148,7 +148,12 @@ impl BoundedTensorMemo {
     /// Insert `output` under `key`, evicting the LRU entry when at capacity.
     pub fn insert(&mut self, key: (u64, u64), output: Tensor) {
         if self.max_entries == 0 { return; }
-        if self.entries.len() >= self.max_entries {
+        if let Some(&(_, old_gen)) = self.entries.get(&key) {
+            // Re-inserting an existing key overwrites it in place: drop its stale
+            // by_age row (mirroring get()'s promotion) so the two maps stay in sync,
+            // and skip eviction since entries.len() does not grow.
+            self.by_age.remove(&(old_gen, key));
+        } else if self.entries.len() >= self.max_entries {
             // Evict the entry with the smallest gen (least recently used).
             if let Some(&(evict_gen, evict_key)) = self.by_age.keys().next() {
                 self.by_age.remove(&(evict_gen, evict_key));

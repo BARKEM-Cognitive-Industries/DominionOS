@@ -1,14 +1,14 @@
-# AetherOS AI Agent Manual
+# DominionOS AI Agent Manual
 
-**Audience:** You — an AI agent embedded in or connected to AetherOS.  
-**Purpose:** Everything you need to navigate, read, and control AetherOS without vision.  
-**Version:** Matches `aether-core::agent` module.
+**Audience:** You — an AI agent embedded in or connected to DominionOS.  
+**Purpose:** Everything you need to navigate, read, and control DominionOS without vision.  
+**Version:** Matches `dominion-core::agent` module.
 
 ---
 
 ## 1. What You Are and What You Can Do
 
-You are an AI agent with native, structured access to AetherOS. You do not use screenshots or vision models. Instead, every frame the OS serialises its entire state into a structured text snapshot that you read directly. You send typed actions back; the OS routes them to the right component and tells you the result.
+You are an AI agent with native, structured access to DominionOS. You do not use screenshots or vision models. Instead, every frame the OS serialises its entire state into a structured text snapshot that you read directly. You send typed actions back; the OS routes them to the right component and tells you the result.
 
 You can:
 - Read the state of every window, app, file, process, VM, and data store on the system
@@ -54,7 +54,7 @@ If a node disappears from the snapshot, it has been destroyed (window closed, fi
 
 ```
 os[tick=1047]
-  window[id=1 app=Browser title="AetherBrowser" focused]  +focus +minimise +close
+  window[id=1 app=Browser title="DominionBrowser" focused]  +focus +minimise +close
     browser[id=2 url=https://example.com title="Example Domain" no_back no_fwd] +back +forward +reload +navigate(url)
     textfield[id=3 label="URL" value="https://example.com" ph=https://] +type(text) +clear +navigate(url)
     button[id=4 label="Reload"] +click
@@ -245,7 +245,7 @@ After every dispatch you receive an `AgentResult`:
 Snapshot: icon[id=21 label="IDE"] +open
 Action:   open(21)
 Result:   Ok
-Next:     window[id=50 app=IDE title="AetherOS IDE" focused] appears
+Next:     window[id=50 app=IDE title="DominionOS IDE" focused] appears
 ```
 
 ### 6.2 Navigate the Browser to a URL
@@ -288,7 +288,7 @@ Result:   OkWith("Documents\nDownloads\nreadme.txt")
 ```
 Snapshot: listitem[id=10 label="readme.txt" i=1] +open +read_file
 Action:   read_file(10)
-Result:   OkWith("# AetherOS\nWelcome to the future of computing.")
+Result:   OkWith("# DominionOS\nWelcome to the future of computing.")
 ```
 
 ### 6.5 Write a File
@@ -431,7 +431,7 @@ To find what apps are available to open:
 
 ## 9. Capabilities and Permissions
 
-Your access is governed by AetherOS capability tokens under `Domain::AiAgent`. In practice:
+Your access is governed by DominionOS capability tokens under `Domain::AiAgent`. In practice:
 
 - **Read** (snapshot): You always have this within your granted scope.
 - **Write** (dispatch): Specific actions may be restricted. If you receive `Denied`, you do not have the capability for that action on that node. Do not retry.
@@ -488,7 +488,7 @@ For any complex task, follow this pattern:
 8. VERIFY final state matches intended outcome
 ```
 
-**Example — "Open the browser and navigate to docs.aetheros.io":**
+**Example — "Open the browser and navigate to docs.dominionos.io":**
 
 ```
 1. Read snapshot
@@ -497,10 +497,10 @@ For any complex task, follow this pattern:
 4. Dispatch open(21)
 5. Result: Ok
 6. Read snapshot → window[id=50 app=Browser ...] with browser[id=51 ...]
-7. Dispatch navigate(51, "https://docs.aetheros.io")
+7. Dispatch navigate(51, "https://docs.dominionos.io")
 8. Result: Ok
-9. Read snapshot → browser[id=51 url=https://docs.aetheros.io loading=true]
-10. Poll: read snapshot again → browser[id=51 ... loading=false title="AetherOS Docs"]
+9. Read snapshot → browser[id=51 url=https://docs.dominionos.io loading=true]
+10. Poll: read snapshot again → browser[id=51 ... loading=false title="DominionOS Docs"]
 11. Verified: browser is now at the target URL
 ```
 
@@ -533,12 +533,12 @@ AFTER ACTION:  always re-read snapshot to confirm state change
 
 ---
 
-## 13. AetherOS-Specific Notes
+## 13. DominionOS-Specific Notes
 
 - **The desktop is always present** even when all windows are closed. It is your root navigation surface.
 - **The taskbar** is the fastest way to switch between open apps — always present, one `+focus` action per entry.
 - **Terminal output** is returned inline in `OkWith` from `run_cmd` — you do not need to scrape it from history.
-- **The editor supports live evaluation** of Aether language expressions. If `live_eval` is enabled (check Settings), lines are evaluated as you type.
+- **The editor supports live evaluation** of Dominion language expressions. If `live_eval` is enabled (check Settings), lines are evaluated as you type.
 - **Files app** shows the current directory as `listitem` children. Navigate into folders with `open(listitem_id)`.
 - **Task Manager** shows live CPU and memory per process. Use `kill(proc_id)` to terminate.
 - **Settings toggles** (`toggle` nodes) apply immediately — no save button needed.

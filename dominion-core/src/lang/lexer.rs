@@ -1,6 +1,6 @@
-//! The Aether lexer: source text → a flat token stream.
+//! The Dominion lexer: source text → a flat token stream.
 //!
-//! Aether's surface syntax (SRS §5.5) is declarative and data-flow oriented.
+//! Dominion's surface syntax (SRS §5.5) is declarative and data-flow oriented.
 //! The lexer recognises the keywords, the `=>` parallel-map operator, the `::`
 //! path separator, `@`-decorators (hardware hints like `@NPU`), and the usual
 //! literals and operators.
@@ -149,6 +149,9 @@ pub fn lex(src: &str) -> Result<Vec<Spanned>, LexError> {
                     if ch == '\\' && i + 1 < chars.len() {
                         i += 1;
                         let esc = chars[i];
+                        if esc == '\n' {
+                            line += 1;
+                        }
                         s.push(match esc {
                             'n' => '\n',
                             't' => '\t',

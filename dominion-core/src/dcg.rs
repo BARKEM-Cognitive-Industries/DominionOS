@@ -145,7 +145,7 @@ impl Dcg {
         let v = match &self.nodes[id] {
             Node::Const(c) => *c,
             Node::Param(i) => args[*i],
-            Node::Neg(a) => -self.eval_node(*a, args, memo)?,
+            Node::Neg(a) => self.eval_node(*a, args, memo)?.wrapping_neg(),
             Node::Bin(op, a, b) => {
                 let x = self.eval_node(*a, args, memo)?;
                 let y = self.eval_node(*b, args, memo)?;

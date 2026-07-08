@@ -120,6 +120,21 @@ impl Signer {
         self.leaves.len()
     }
 
+    /// `true` while at least one unused one-time slot remains, i.e. a further
+    /// [`sign_next`](Self::sign_next) call would produce a signature rather than exhaustion.
+    /// Callers on the public voting path check this to degrade gracefully (return `None`)
+    /// instead of driving the signer past exhaustion.
+    pub fn can_sign(&self) -> bool {
+        self.next_slot < self.leaves.len()
+    }
+
+    /// `true` once every one-time leaf has been consumed. The validator MUST rotate to a
+    /// fresh [`Signer`] (new seed) before signing again — re-using a Lamport leaf leaks
+    /// enough preimage bits to forge arbitrary signatures under this validator's root.
+    pub fn is_exhausted(&self) -> bool {
+        !self.can_sign()
+    }
+
     /// Sign `msg` with the one-time key at `index` (each index at most once).
     pub fn sign(&self, msg: &[u8], index: usize) -> Option<OtsSig> {
         if index >= self.leaves.len() {
@@ -137,21 +152,16 @@ impl Signer {
     /// Signing two different messages with the same Lamport leaf would expose enough preimage
     /// bits for a forger to construct arbitrary signatures under this validator's root.
     pub fn sign_next(&mut self, msg: &[u8]) -> Option<OtsSig> {
-        if self.next_slot >= self.leaves.len() {
+        if self.is_exhausted() {
             // Exhausted: every one-time leaf has been used. Callers MUST construct a new
             // Signer with a fresh master seed. Re-using a Lamport leaf for two distinct
             // messages leaks enough preimage bits for a forger to sign arbitrary messages
             // under this validator's Merkle root.
             //
-            // `debug_assert` fires in test/debug builds so callers notice exhaustion
-            // immediately rather than silently accumulating None returns.
-            debug_assert!(
-                false,
-                "sign_next called on an exhausted Signer (next_slot={}, capacity={}): \
-                 rotate to a new Signer with a fresh seed before signing again",
-                self.next_slot,
-                self.leaves.len()
-            );
+            // Return `None` (never panic) so a Byzantine peer cannot drive a node to
+            // exhaustion and trigger a kernel panic / DoS. Callers on the voting path
+            // guard with `can_sign()` and degrade gracefully. The one-time property is
+            // preserved: an exhausted signer refuses to sign rather than reusing a leaf.
             return None;
         }
         let slot = self.next_slot;
@@ -347,7 +357,13 @@ pub struct Validator {
     prepared_sent: BTreeSet<(u32, u64)>,
     commit_sent: BTreeSet<(u32, u64)>,
     /// Lock: the highest-view value this replica prepared for a slot (carried in view-change).
-    locked: BTreeMap<u64, (u32, Vec<u8>)>,
+    /// Each lock retains the **prepared certificate** — the quorum of signed Prepare votes
+    /// that justify it — so a peer adopting the lock via view-change can verify it rather
+    /// than trust attacker-chosen bytes (BFT safety).
+    locked: BTreeMap<u64, (u32, Vec<u8>, Vec<Vote>)>,
+    /// Full Prepare votes retained per `(view, slot, vhash)`, keyed by signer, so a prepared
+    /// certificate can be assembled when quorum is reached.
+    prepare_votes: BTreeMap<(u32, u64, Hash256), BTreeMap<u32, Vote>>,
     /// Final committed log: slot → value.
     committed: BTreeMap<u64, Vec<u8>>,
     /// Hash-chained digest of the committed history (determinism boundary).
@@ -375,6 +391,7 @@ impl Validator {
             prepared_sent: BTreeSet::new(),
             commit_sent: BTreeSet::new(),
             locked: BTreeMap::new(),
+            prepare_votes: BTreeMap::new(),
             committed: BTreeMap::new(),
             log_digest: Hash256::of(b"bft-log-genesis"),
             vc_tally: BTreeMap::new(),
@@ -406,6 +423,12 @@ impl Validator {
     /// calling this again — re-using a Lamport leaf for two different messages leaks enough
     /// preimage bits for a forger to forge arbitrary signatures under this validator's root.
     fn make_vote(&mut self, slot: u64, phase: Phase, value: &[u8]) -> Option<Vote> {
+        // Refuse to sign once the one-time key set is exhausted: reusing a Lamport leaf
+        // would leak preimage bits and enable forgery. Return `None` so an adversary
+        // driving us to exhaustion degrades a vote to a no-op instead of a panic/DoS.
+        if !self.signer.can_sign() {
+            return None;
+        }
         let vhash = Hash256::of(value);
         let msg = Vote::signed_bytes(self.view, slot, phase, &vhash);
         let sig = self.signer.sign_next(&msg)?;
@@ -420,7 +443,7 @@ impl Validator {
         // If this slot is locked at some prior view, the leader must re-propose the locked
         // value (cross-view safety) — never a fresh one.
         let value: Vec<u8> = match self.locked.get(&slot) {
-            Some((_, v)) => v.clone(),
+            Some((_, v, _)) => v.clone(),
             None => value.to_vec(),
         };
         Some(Out::Broadcast(self.make_vote(slot, Phase::PrePrepare, &value)?))
@@ -458,7 +481,7 @@ impl Validator {
             return;
         }
         // If we are locked on a different value for this slot, refuse (safety).
-        if let Some((_, locked)) = self.locked.get(&vote.slot) {
+        if let Some((_, locked, _)) = self.locked.get(&vote.slot) {
             if Hash256::of(locked) != vote.vhash {
                 return;
             }
@@ -475,14 +498,26 @@ impl Validator {
             return;
         }
         let key = (vote.view, vote.slot, Phase::Prepare.tag(), vote.vhash);
+        // Retain the full signed vote so the quorum can be re-exported as a verifiable
+        // prepared certificate inside a later view-change.
+        self.prepare_votes
+            .entry((vote.view, vote.slot, vote.vhash))
+            .or_default()
+            .insert(vote.signer, vote.clone());
         let count = {
             let set = self.tally.entry(key).or_default();
             set.insert(vote.signer);
             set.len()
         };
         if count >= self.set.quorum() && self.commit_sent.insert((self.view, vote.slot)) {
-            // Prepared certificate: lock the value at this view, then send Commit.
-            self.locked.insert(vote.slot, (self.view, vote.value.clone()));
+            // Prepared certificate: lock the value at this view (carrying the quorum of
+            // Prepare votes that prove it), then send Commit.
+            let cert: Vec<Vote> = self
+                .prepare_votes
+                .get(&(vote.view, vote.slot, vote.vhash))
+                .map(|m| m.values().cloned().collect())
+                .unwrap_or_default();
+            self.locked.insert(vote.slot, (self.view, vote.value.clone(), cert));
             if let Some(v) = self.make_vote(vote.slot, Phase::Commit, &vote.value) {
                 out.push(Out::Broadcast(v));
             }
@@ -539,11 +574,18 @@ impl Validator {
         if target <= self.view {
             return;
         }
-        // Merge the sender's locks so a new leader has the full locked set.
-        for (slot, view, value) in decode_locks(&vote.value) {
-            let take = self.locked.get(&slot).map(|(v, _)| view > *v).unwrap_or(true);
+        // Merge the sender's locks so a new leader has the full locked set — but ONLY
+        // those carrying a valid prepared certificate (a quorum of signed Prepare votes
+        // binding the same view/slot/value). Without this, a single Byzantine validator
+        // could inject a forged lock (e.g. view=u32::MAX) and poison every honest replica,
+        // breaking safety. Unauthenticated locks are dropped.
+        for (slot, view, value, cert) in decode_locks(&vote.value) {
+            if !self.verify_prepared_cert(slot, view, &value, &cert) {
+                continue;
+            }
+            let take = self.locked.get(&slot).map(|(v, _, _)| view > *v).unwrap_or(true);
             if take {
-                self.locked.insert(slot, (view, value));
+                self.locked.insert(slot, (view, value, cert));
             }
         }
         let count = {
@@ -560,39 +602,98 @@ impl Validator {
         }
     }
 
+    /// A lock claimed in a view-change is only trustworthy if it carries a **prepared
+    /// certificate**: a quorum of distinct, validly-signed Prepare votes that all bind the
+    /// same `(view, slot, value)`. Anything short of that is attacker-chosen and rejected.
+    fn verify_prepared_cert(&self, slot: u64, view: u32, value: &[u8], cert: &[Vote]) -> bool {
+        let vhash = Hash256::of(value);
+        let mut signers = BTreeSet::new();
+        for v in cert {
+            if v.phase != Phase::Prepare
+                || v.view != view
+                || v.slot != slot
+                || v.vhash != vhash
+                || !v.verify(&self.set)
+            {
+                return false;
+            }
+            signers.insert(v.signer);
+        }
+        signers.len() >= self.set.quorum()
+    }
+
     fn encode_locks(&self) -> Vec<u8> {
         let mut b = Vec::new();
         b.extend_from_slice(&(self.locked.len() as u32).to_le_bytes());
-        for (slot, (view, value)) in &self.locked {
+        for (slot, (view, value, cert)) in &self.locked {
             b.extend_from_slice(&slot.to_le_bytes());
             b.extend_from_slice(&view.to_le_bytes());
             b.extend_from_slice(&(value.len() as u32).to_le_bytes());
             b.extend_from_slice(value);
+            // The prepared certificate: each justifying Prepare vote, length-prefixed.
+            b.extend_from_slice(&(cert.len() as u32).to_le_bytes());
+            for v in cert {
+                let ev = encode_vote(v);
+                b.extend_from_slice(&(ev.len() as u32).to_le_bytes());
+                b.extend_from_slice(&ev);
+            }
         }
         b
     }
 }
 
-fn decode_locks(b: &[u8]) -> Vec<(u64, u32, Vec<u8>)> {
+fn decode_locks(b: &[u8]) -> Vec<(u64, u32, Vec<u8>, Vec<Vote>)> {
+    // Length fields are read from untrusted bytes, so never pre-allocate from them:
+    // growth is tied to bytes actually consumed via `take`, which bounds every read.
     let mut out = Vec::new();
-    if b.len() < 4 {
-        return out;
-    }
-    let n = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
-    let mut p = 4;
+    let mut p = 0usize;
+    let n = match take(b, &mut p, 4) {
+        Some(s) => u32::from_le_bytes(s.try_into().unwrap()) as usize,
+        None => return out,
+    };
     for _ in 0..n {
-        if p + 16 > b.len() {
+        let slot = match take(b, &mut p, 8) {
+            Some(s) => u64::from_le_bytes(s.try_into().unwrap()),
+            None => break,
+        };
+        let view = match take(b, &mut p, 4) {
+            Some(s) => u32::from_le_bytes(s.try_into().unwrap()),
+            None => break,
+        };
+        let vlen = match take(b, &mut p, 4) {
+            Some(s) => u32::from_le_bytes(s.try_into().unwrap()) as usize,
+            None => break,
+        };
+        let value = match take(b, &mut p, vlen) {
+            Some(s) => s.to_vec(),
+            None => break,
+        };
+        let clen = match take(b, &mut p, 4) {
+            Some(s) => u32::from_le_bytes(s.try_into().unwrap()) as usize,
+            None => break,
+        };
+        let mut cert = Vec::new();
+        let mut ok = true;
+        for _ in 0..clen {
+            let elen = match take(b, &mut p, 4) {
+                Some(s) => u32::from_le_bytes(s.try_into().unwrap()) as usize,
+                None => {
+                    ok = false;
+                    break;
+                }
+            };
+            match take(b, &mut p, elen).and_then(decode_vote) {
+                Some(v) => cert.push(v),
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok {
             break;
         }
-        let slot = u64::from_le_bytes(b[p..p + 8].try_into().unwrap());
-        let view = u32::from_le_bytes(b[p + 8..p + 12].try_into().unwrap());
-        let vlen = u32::from_le_bytes(b[p + 12..p + 16].try_into().unwrap()) as usize;
-        p += 16;
-        if p + vlen > b.len() {
-            break;
-        }
-        out.push((slot, view, b[p..p + vlen].to_vec()));
-        p += vlen;
+        out.push((slot, view, value, cert));
     }
     out
 }
@@ -634,7 +735,10 @@ pub fn decode_vote(b: &[u8]) -> Option<Vote> {
     let sig = get_bytes(b, &mut p)?;
     let ots_pub = get_bytes(b, &mut p)?;
     let plen = u32::from_le_bytes(take(b, &mut p, 4)?.try_into().ok()?) as usize;
-    let mut path = Vec::with_capacity(plen);
+    // Do NOT pre-allocate from an attacker-controlled length (plen up to ~4.29e9 would
+    // request ~137 GB and abort via handle_alloc_error). Grow as bytes are consumed;
+    // each iteration's `take` bounds the read against the actual payload length.
+    let mut path = Vec::new();
     for _ in 0..plen {
         let mut h = [0u8; 32];
         h.copy_from_slice(take(b, &mut p, 32)?);

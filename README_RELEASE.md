@@ -1,12 +1,12 @@
-# AetherOS — Developer Research Preview
+# DominionOS — Developer Research Preview
 
 > ⚠️ **Experimental. In Development. Use at Your Own Risk.**
 > 
-> This is a research OS built in ~4 days by [Cognitive Industries](https://cognitive-industries.org). We've poured 99% of the effort into the backend architecture and it works. The frontend and user experience are sparse—they'll be the main focus if this gains traction. This is not Windows, macOS, or Linux. It will not behave like them. Expect missing features, incomplete hardware support, and breaking changes between versions. Use in QEMU or on expendable hardware only. **Possible hardware damage on bare metal. You've been warned.**
+> This is a research OS built by [Cognitive Industries](https://cognitive-industries.org). The backend is substantially more complete than the frontend, and it works. The frontend and user experience are sparse—they'll be the main focus if this gains traction. This is not Windows, macOS, or Linux. It will not behave like them. Expect missing features, incomplete hardware support, and breaking changes between versions. Use in QEMU or on expendable hardware only. **Possible hardware damage on bare metal. You've been warned.**
 
 ---
 
-## What Is AetherOS?
+## What Is DominionOS?
 
 We built a ground-up operating system around three core ideas:
 
@@ -16,7 +16,7 @@ We built a ground-up operating system around three core ideas:
 
 3. **Deterministic execution.** The whole machine is a state machine. Every action is an input. We can rewind the OS instruction-by-instruction and replay exactly what happened.
 
-It boots on bare metal (or QEMU). It has a working terminal. We can run the Aether language (our safe interpreter) inside the OS. The capability security, storage layer, and process model all function.
+It boots on bare metal (or QEMU). It has a working terminal. We can run the Dominion language (our safe interpreter) inside the OS. The capability security, storage layer, and process model all function.
 
 What we *haven't* finished: a polished user interface, full hardware support, formal verification, and distributed networking. Those are next if there's momentum.
 
@@ -31,9 +31,9 @@ What we *haven't* finished: a polished user interface, full hardware support, fo
 - ✅ **Deterministic state machine** with instruction-level replay
 - ✅ **Safe-mode terminal** for low-level access
 - ✅ **Process isolation** via capability-bounded IPC
-- ✅ **Real device drivers** (PCI, virtio-blk, virtio-net confirmed working)
+- ✅ **Real device drivers** (PCI, ACPI, SMP; storage: virtio-blk/AHCI/NVMe/USB; network: virtio-net/e1000/RTL8139; USB xHCI + HID — tested primarily in QEMU)
 - ✅ **Persistence** to disk; survives reboot
-- ✅ **The Aether language** running inside the OS
+- ✅ **The Dominion language** running inside the OS
 
 ### Security & Cryptography
 - ✅ **Unforgeable capabilities** with provenance tracking
@@ -72,9 +72,9 @@ What we *haven't* finished: a polished user interface, full hardware support, fo
 - ⚠️ **Composable UI** implemented on Desktop but not extended to all app pages yet
 
 ### Hardware Support
-- ⚠️ **Keyboard/mouse/input devices** limited (PS/2 works, USB HID incomplete)
+- ⚠️ **Input devices** PS/2 and USB HID keyboard/mouse work (USB validated mostly in QEMU)
 - ⚠️ **GPU drivers** not implemented (software rendering only)
-- ⚠️ **Network drivers** limited to virtio (no Intel/Broadcom/others yet)
+- ⚠️ **Storage/network drivers** implemented (virtio-blk/AHCI/NVMe/USB, virtio-net/e1000/RTL8139) but tested primarily in QEMU
 - ⚠️ **Audio** specified but not implemented
 - ⚠️ **Wireless networking** not implemented
 
@@ -106,10 +106,10 @@ cargo build --release
 **Create bootable disk image:**
 ```powershell
 cd ..\boot
-cargo run --release -- ..\kernel\target\x86_64-dominion\release\dominion-kernel ..\aetheros.img
+cargo run --release -- ..\kernel\target\x86_64-dominion\release\dominion-kernel ..\dominionos.img
 ```
 
-This produces `aetheros.img` (raw BIOS disk image, bootable in QEMU or on bare metal).
+This produces `dominionos.img` (raw BIOS disk image, bootable in QEMU or on bare metal).
 
 ### Run It
 
@@ -125,15 +125,15 @@ cargo run --release
 **On bare metal:**
 ```bash
 # Create bootable USB (Windows)
-.\make-bootable-usb.ps1 -ImagePath aetheros.iso -USBDrive "F:"
+.\make-bootable-usb.ps1 -ImagePath dominionos.iso -USBDrive "F:"
 
 # Boot from USB and hope for the best
 ```
 
 **In a VM:**
-- VirtualBox: Mount `aetheros.iso`, boot
+- VirtualBox: Mount `dominionos.iso`, boot
 - VMware: Same
-- QEMU: `qemu-system-x86_64 -drive file=aetheros.img,format=raw`
+- QEMU: `qemu-system-x86_64 -drive file=dominionos.img,format=raw`
 
 ### Try the Terminal
 
@@ -185,10 +185,10 @@ The `ml` command runs a neural network benchmark. The system is working if it co
 - framebuffer console (SVGA)
 
 ### Known Limitations
-- **Keyboard:** PS/2 only (no USB HID)
-- **Mouse:** PS/2 mouse works; trackpads don't
-- **Network:** virtio only (no Intel 82540EM, no Broadcom)
-- **Storage:** virtio-blk only (no NVMe direct, no SATA)
+- **Keyboard:** PS/2 and USB HID (USB validated mostly in QEMU)
+- **Mouse:** PS/2 and USB HID mice work; trackpads don't
+- **Network:** virtio-net, Intel e1000/e1000e, and RTL8139 implemented (tested primarily in QEMU)
+- **Storage:** virtio-blk, AHCI, NVMe, and USB Mass Storage implemented (tested primarily in QEMU)
 - **Graphics:** Software framebuffer (no GPU acceleration)
 
 **Translation:** Don't try this on your gaming PC yet. QEMU is your safest bet.
@@ -197,7 +197,7 @@ The `ml` command runs a neural network benchmark. The system is working if it co
 
 ## Performance Benchmarks
 
-These are **real numbers** from actual `run-bench.ps1` runs on an i7-12650H with WHPX acceleration (near-native speed). All results are from inside the booted AetherOS kernel — no fabrication, no extrapolation except where explicitly marked as `projected_*`.
+These are **real numbers** from actual `run-bench.ps1` runs on an i7-12650H with WHPX acceleration (near-native speed). All results are from inside the booted DominionOS kernel — no fabrication, no extrapolation except where explicitly marked as `projected_*`.
 
 **Benchmark configuration:** 8 vCPUs, 4096 MiB RAM, WHPX accel, TSC at ~3973 MHz.
 
@@ -273,7 +273,7 @@ ChaCha20-Poly1305 is the default. No AES-NI used yet — hardware acceleration w
 
 ML runs on CPU only — no GPU driver. No AVX/FMA in this run (deterministic SSE2 build). Enable with `.\run-bench.ps1 -Fma` for higher throughput at the cost of bit-for-bit reproducibility.
 
-### Language Interpreter (Aether polyglot bench)
+### Language Interpreter (Dominion polyglot bench)
 
 All variants run the same AST — just parsed from different source syntax:
 
@@ -285,9 +285,9 @@ All variants run the same AST — just parsed from different source syntax:
 | TypeScript | 34,670/s | 635/s | 17,790,190 |
 | C++ | 25,537/s | 603/s | 16,899,453 |
 
-**Linux/Windows comparisons are deferred** — running the Linux harness (`bench/linux/run-linux-bench.sh`) requires a bare-metal Linux machine or WSL. The numbers above are AetherOS-on-WHPX and are a fair baseline for AetherOS itself. We'll publish the Linux comparison once the harness is complete.
+**Linux/Windows comparisons are deferred** — running the Linux harness (`bench/linux/run-linux-bench.sh`) requires a bare-metal Linux machine or WSL. The numbers above are DominionOS-on-WHPX and are a fair baseline for DominionOS itself. We'll publish the Linux comparison once the harness is complete.
 
-**Bottom line:** AetherOS is fast where it matters — single-digit nanosecond IPC, 133M msgs/s, fast OOM recovery, deterministic bit-identical ML. It's not yet tuned for peak throughput (no AES-NI, no AVX by default, cooperative scheduler). Those are future work.
+**Bottom line:** DominionOS is fast where it matters — single-digit nanosecond IPC, 133M msgs/s, fast OOM recovery, deterministic bit-identical ML. It's not yet tuned for peak throughput (no AES-NI, no AVX by default, cooperative scheduler). Those are future work.
 
 ---
 
@@ -301,9 +301,9 @@ You don't need to memorize this, but here's how the pieces fit:
 3. **Deterministic execution.** Every action is an input event. No hidden state. Reproducible down to the clock cycle.
 
 ### Layers (bottom to top)
-- **Bootloader** (~50KB) — BIOS → 64-bit mode → hand off to kernel
-- **Kernel** (~100KB) — Scheduling, memory management, IPC, capability enforcement
-- **Core services** (~400KB) — Filesystem, networking, crypto, device drivers
+- **Bootloader** — BIOS → 64-bit mode → hand off to kernel
+- **Kernel** — Freestanding x86_64 kernel: SMP bring-up, paging, GDT/IDT, ACPI/PIC, scheduling, IPC, capability enforcement, and device drivers
+- **Core services** — Filesystem, networking, crypto, ML, rendering
 - **Dominion runtime** — Safe interpreter inside the OS
 - **Applications** — Shell, terminals, tools (minimal for now)
 
@@ -334,7 +334,7 @@ See `CONTRIBUTING.md` for full details.
 ## License & Commercial Use
 
 ### Open Source
-AetherOS is free to use and modify for research, education, and non-commercial projects. Full source code, full rights to study and fork.
+DominionOS is free to use and modify for research, education, and non-commercial projects. Full source code, full rights to study and fork.
 
 **License:** Dual-licensed under the **GNU Affero General Public License v3.0** (AGPLv3) for non-commercial use and the **Prosperity Public License** for commercial use.
 
@@ -345,9 +345,9 @@ AetherOS is free to use and modify for research, education, and non-commercial p
 See `LICENSE.md` for full terms.
 
 ### Attribution
-If you use AetherOS or its code, please credit us:
+If you use DominionOS or its code, please credit us:
 
-> AetherOS, developed by Cognitive Industries (https://cognitive-industries.org)
+> DominionOS, developed by Cognitive Industries (https://cognitive-industries.org)
 
 ---
 
@@ -364,12 +364,12 @@ If you use AetherOS or its code, please credit us:
 
 ## Development Status
 
-We built this in about 4 days as a proof of concept. The backend works. The frontend doesn't. Here's what that means:
+We built this as an early-stage research prototype. The backend is substantially more complete than the frontend. Here's what that means:
 
-- **Backend (99% done):** Capability system, storage, crypto, process isolation, network stack. All tested. All works.
+- **Backend:** Capability system, storage, crypto, process isolation, network stack. All tested. All works.
 - **Frontend (20% done):** Shell, terminal, GUI. Code exists. Wiring incomplete. Next priority if we continue.
 - **Features (60% done):** ML inference works. Distributed networking sketched. Formal proofs deferred.
-- **Hardware support (30% done):** QEMU tested. Real hardware is a research question.
+- **Hardware support (30% done):** Storage/NIC/USB drivers implemented and QEMU-tested. Broad real-hardware validation is a research question.
 
 We're not abandoning this. But we're also not prioritizing it unless there's genuine interest or a specific use case that makes sense.
 
@@ -380,7 +380,7 @@ We're not abandoning this. But we're also not prioritizing it unless there's gen
 ## What's Next (If We Continue)
 
 1. **Frontend.** Wire up the shell, terminal, and GUI properly.
-2. **Hardware support.** Real drivers for Intel NICs, GPUs, etc.
+2. **Hardware support.** Bare-metal validation of existing drivers, plus GPU and audio.
 3. **Formal verification.** Prove the capability system is correct.
 4. **Distributed networking.** Multi-node capability enforcement.
 5. **Optimization.** Hardware-accelerated crypto, SIMD, etc.
@@ -395,13 +395,13 @@ All of these are doable. None are show-stoppers. Just requires focus.
 A: No. We're not trying to. We're exploring a different security model. Linux is mature, battle-tested, and has massive hardware support. We're a research project.
 
 **Q: Can I run Rust/Python/Go on this?**
-A: The Aether language runs inside the OS and includes a polyglot interpreter that parses Python, Rust, JavaScript, TypeScript, Java, and C++ syntax. It's not a full runtime for those languages — it's a toy-level demo of the interpreter. Full language runtimes are future work.
+A: The Dominion language runs inside the OS and includes a polyglot interpreter that parses Python, Rust, JavaScript, TypeScript, Java, and C++ syntax. It's not a full runtime for those languages — it's a toy-level demo of the interpreter. Full language runtimes are future work.
 
 **Q: The GUI — is it real?**
 A: Yes. There's a full desktop with 9 apps (Desktop, Files, Browser, Terminal, Editor, IDE, Explorer, Task Manager, Settings), floating window manager, taskbar, and system tray. It boots and runs. Some wiring is incomplete — not everything is hooked up yet. The GUI is the main focus going forward.
 
 **Q: Is this a microkernel OS?**
-A: Sort of. We have a small kernel (~100KB), but drivers are still inside it. True microkernel design (all drivers in userspace) is phase 2.
+A: Sort of. We have a small kernel, but drivers are still inside it. True microkernel design (all drivers in userspace) is phase 2.
 
 **Q: Can I use this in production?**
 A: No. It's experimental. Expect crashes, missing features, and breaking changes.
@@ -420,7 +420,7 @@ A: Research. We're testing whether capability-based security can be both practic
 
 ---
 
-**AetherOS is a Cognitive Industries research project.**
+**DominionOS is a Cognitive Industries research project.**
 
 Questions, feedback, or licensing inquiries? **contact@cognitive-industries.org**
 

@@ -591,12 +591,11 @@ impl HyperVector {
             return None;
         }
         let mut out = vec![0u64; Self::words_for(dim)];
-        let threshold = vectors.len() / 2;
         for bit in 0..dim {
             let (w, b) = (bit / 64, bit % 64);
             let count = vectors.iter().filter(|v| (v.words[w] >> b) & 1 == 1).count();
             // Majority (ties → 1, matching the usual VSA convention).
-            if count * 2 >= vectors.len() && count > threshold || count * 2 > vectors.len() {
+            if count * 2 >= vectors.len() {
                 out[w] |= 1u64 << b;
             }
         }

@@ -1,4 +1,4 @@
-# AetherOS Implementation Status
+# DominionOS Implementation Status
 
 **Last Updated:** 2026-06-22 (Consolidated from spec analysis)
 
@@ -30,7 +30,7 @@
 | **System Services & Lifecycle** | 95% | None | ✅ SHIPPED |
 | **Utilities, Testing & Debug** | 95% | None | ✅ SHIPPED |
 | **Rendering & Graphics** | 95% | None | ✅ SHIPPED |
-| **Browser & Web Stack** | 90% | Terminal input routing (small) | ✅ SHIPPED |
+| **Browser & Web Stack** | 90% | None | ✅ SHIPPED |
 | **Networking & Communications** | 90% | None | ✅ SHIPPED |
 | **Access Control & Hardening** | 90% | Formal proofs (post-release) | ✅ SHIPPED |
 | **Accessibility, Localization & UX** | 90% | None | ✅ SHIPPED |
@@ -44,7 +44,7 @@
 
 | Subsystem | Spec Alignment | Critical Gap | Impact | Plan |
 |-----------|----------------|--------------|--------|------|
-| **Desktop, Shell & Workspace** | 85% | Terminal input routing; shell/workspace fragmentation; composability incomplete | Terminal appears frozen; shell architecture needs refactoring; Desktop cards/icons mismatch | **Easy fix** (1–2 weeks): (1) wire keyboard events to terminal, (2) consolidate shell.rs + workspace.rs, (3) extend composability to all pages |
+| **Desktop, Shell & Workspace** | 85% | Shell/workspace fragmentation; composability incomplete | Shell architecture needs refactoring; Desktop cards/icons mismatch | **Easy fix** (1–2 weeks): (1) consolidate shell.rs + workspace.rs, (2) extend composability to all pages |
 | **ML/AI & Accelerated Compute** | 75% | Generative compression; RL optimization; ML threat detection | Storage bloat; no intelligent CPU/accelerator dispatch; threat detection statistical-only | **Medium effort** (8–12 weeks): (1) neural codec stubs → LLM/VAE, (2) RL agent for prefetch/cache, (3) ML models for graph/scheduling anomalies |
 | **Device & Driver Management** | 70% | DST replay-validation; real bus enumeration; L5 AI-drafted specs | Driver synthesis L2 uses hand-crafted descriptors; L4/L5 spec admission incomplete | **High effort** (12–16 weeks): (1) real PCI/USB/ACPI enumerators, (2) DST validation harness, (3) AI spec admission gates |
 | **Memory, Storage & Persistence** | 60% | Generative compression; Band-Pass routing; hardware encryption tiers | Storage uses raw bytes; no semantic compression; Tier A/B deferred to kernel | **High effort** (16+ weeks): (1) generative codec pipeline, (2) routing logic, (3) kernel Tier A/B integration |
@@ -110,7 +110,7 @@
 **Blockers resolved:**
 1. Formal verification roadmap (decide Coq/Lean/TLA+, scope TCB)
 2. Measured boot integration (TPM 2.0)
-3. Terminal interactivity (small fix, unblocks shell demos)
+3. Bare-metal driver validation (storage/NIC/USB on real hardware)
 4. Hardware tier wiring (integrate kernel Tier A/B)
 
 **Output:** Ready for enterprise pilots; formal audit trail established
@@ -136,8 +136,8 @@
 | **Networking** | 🟢 Low | NDN proven design; Tor integration standard | Socket-layer works; Tor SOCKS pending (small integration) |
 | **Security/Crypto** | 🟡 Medium | Formal proofs absent; timing audits incomplete | Software-only in release; formal verification phase 2 |
 | **Storage** | 🟡 Medium | Core object graph solid; generative compression deferred | Pragmatic raw-byte storage; codec path architected |
-| **Microkernel** | 🟡 Medium | Not formally verified; ~100k LOC (not 12k) | Clear TCB boundary; safety via Rust + tests; proofs phase 2 |
-| **Shell/Terminal** | 🟠 High | Input routing not wired; appears frozen | **Quick fix** (1–2 days); unblocks REPL workflows |
+| **Microkernel** | 🟡 Medium | Not formally verified; drivers/services still in-kernel | Clear TCB boundary; safety via Rust + tests; proofs phase 2 |
+| **Shell/Terminal** | 🟢 Low | Interactive terminal wired and test-covered; command set still expanding | ASH shell + GUI desktop terminal both functional |
 | **Formal TCB** | 🔴 Critical | No proofs yet | Decision gate for high-assurance deployments; acceptable for demo |
 | **Measured Boot** | 🔴 Critical | No PCR chain or attestation | Decision gate for trust claims; roadmap clear; ~2–3 weeks to implement |
 
@@ -167,7 +167,7 @@
 | Single-user demo boots | ✅ | ✓ |
 | 9 apps functional | ✅ | ✓ |
 | Browser renders HTML/JS | ✅ | ✓ |
-| Shell (terminal) interactivity | ⚠️ **Pending** | Small fix required (1–2 days) |
+| Shell (terminal) interactivity | ✅ | ✓ |
 | File I/O persistence | ✅ | ✓ |
 | Capability firewall enforces | ✅ | ✓ |
 | Rendering 60 FPS | ✅ | ✓ |
@@ -177,13 +177,12 @@
 | Generative compression | ❌ | ✗ Deferred to 2.0 |
 | Multi-node distributed | ❌ | ✗ Deferred to 2.0 |
 
-**Release Gate Decision:** ✅ **Ready for 1.0 release** (with terminal input routing fix + documentation of deferred items)
+**Release Gate Decision:** ✅ **Ready for 1.0 release** (with documentation of deferred items)
 
 ---
 
 ## Key Metrics
 
-- **Lines of code (dominion-core):** ~500k Rust (kernel ~100k, services ~400k)
 - **Modules:** 160+ named modules
 - **Tests:** 700+ unit tests, 100+ integration tests
 - **Spec files (archived):** 97 .md files (now consolidated into 17-subsystem architecture)

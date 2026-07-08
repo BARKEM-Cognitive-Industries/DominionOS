@@ -212,6 +212,13 @@ pub fn ray_march_shadow(sdf: &SdfField, px: f32, py: f32, params: &ShadowParams)
     density * params.color[3] // modulate by shadow alpha
 }
 
+/// Floor `v` toward negative infinity as an `i32` (no_std, libm-free).
+#[inline]
+fn floor_i32(v: f32) -> i32 {
+    let t = v as i32; // truncates toward zero
+    if v < t as f32 { t - 1 } else { t }
+}
+
 /// Bilinear sample of the SDF at float coordinates (sx, sy).
 fn sample_sdf_bilinear(sdf: &SdfField, sx: f32, sy: f32) -> f32 {
     let w = sdf.width as i32;
@@ -221,8 +228,12 @@ fn sample_sdf_bilinear(sdf: &SdfField, sx: f32, sy: f32) -> f32 {
     let fx = sx - 0.5;
     let fy = sy - 0.5;
 
-    let x0 = fx as i32;
-    let y0 = fy as i32;
+    // Floor toward negative infinity (fx/fy can be negative when the shadow
+    // offset pushes samples left/up of the field). `as i32` truncates toward
+    // zero, which would make tx/ty negative and extrapolate instead of letting
+    // safe_get clamp to the out-of-field sentinel.
+    let x0 = floor_i32(fx);
+    let y0 = floor_i32(fy);
     let x1 = x0 + 1;
     let y1 = y0 + 1;
 

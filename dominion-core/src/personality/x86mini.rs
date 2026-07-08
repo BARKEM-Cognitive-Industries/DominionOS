@@ -824,7 +824,9 @@ impl Cpu {
             7 => {
                 // sar (arithmetic)
                 self.cf = (a >> (count - 1)) & 1 != 0;
-                (sext(a, size) >> count) & m
+                // Arithmetic right shift: sign-extend to i64 first so negative
+                // values sign-fill for all sizes (incl. size 8, where sext is a no-op).
+                ((sext(a, size) as i64) >> count) as u64 & m
             }
             _ => a,
         };
@@ -889,6 +891,13 @@ impl Cpu {
         };
         let q = dividend / d;
         let r = dividend % d;
+        // Quotient must fit the signed destination width or #DE (e.g. INT_MIN / -1).
+        let dbits = size as u32 * 8;
+        let qmin = -(1i128 << (dbits - 1));
+        let qmax = (1i128 << (dbits - 1)) - 1;
+        if q < qmin || q > qmax {
+            return Err(CpuFault::DivideByZero); // quotient overflow → #DE
+        }
         self.reg_write(RAX, size, q as u64 & mask(size));
         self.reg_write(RDX, size, r as u64 & mask(size));
         Ok(())

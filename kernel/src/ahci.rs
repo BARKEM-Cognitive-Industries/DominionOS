@@ -211,6 +211,12 @@ impl BlockDevice for AhciDisk {
         if !buf.len().is_multiple_of(BLOCK_SIZE) {
             return Err(BlockError::BadLength);
         }
+        if start_lba
+            .checked_add((buf.len() / BLOCK_SIZE) as u64)
+            .map_or(true, |end| end > self.sectors)
+        {
+            return Err(BlockError::OutOfRange);
+        }
         let total = buf.len() / BLOCK_SIZE;
         let mut done = 0;
         while done < total {
@@ -227,6 +233,12 @@ impl BlockDevice for AhciDisk {
     fn write_blocks(&mut self, start_lba: u64, buf: &[u8]) -> Result<(), BlockError> {
         if !buf.len().is_multiple_of(BLOCK_SIZE) {
             return Err(BlockError::BadLength);
+        }
+        if start_lba
+            .checked_add((buf.len() / BLOCK_SIZE) as u64)
+            .map_or(true, |end| end > self.sectors)
+        {
+            return Err(BlockError::OutOfRange);
         }
         let total = buf.len() / BLOCK_SIZE;
         let mut done = 0;

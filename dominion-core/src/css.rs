@@ -418,10 +418,12 @@ fn apply_decl(style: &mut Computed, prop: &str, value: &str) {
                 2 => {
                     style.margin_top = parts[0];
                     style.margin_bottom = parts[0];
+                    style.margin_left = parts[1];
                 }
                 3 => {
                     style.margin_top = parts[0];
                     style.margin_bottom = parts[2];
+                    style.margin_left = parts[1];
                 }
                 4 => {
                     style.margin_top = parts[0];
@@ -504,6 +506,9 @@ pub fn parse_color(v: &str) -> Option<Color> {
 
 fn parse_hex_color(hex: &str) -> Option<Color> {
     let h = hex.trim();
+    if !h.is_ascii() {
+        return None;
+    }
     match h.len() {
         3 => {
             let r = hex_nib(h.as_bytes()[0])?;

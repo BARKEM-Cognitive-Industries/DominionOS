@@ -1,8 +1,8 @@
-# AetherOS Documentation
+# DominionOS Documentation
 
 **Updated:** 2026-06-22 (Consolidated from 97 archived specs)
 
-Welcome! This directory contains the unified architecture and implementation status for AetherOS, a capability-based microkernel OS with an object-centric runtime (Dominion), unified rendering, and on-device AI.
+Welcome! This directory contains the unified architecture and implementation status for DominionOS, a capability-based microkernel OS with an object-centric runtime (Dominion), unified rendering, and on-device AI.
 
 ## Quick Start
 
@@ -38,7 +38,7 @@ Welcome! This directory contains the unified architecture and implementation sta
 ### I'm a product manager — what's the status?
 1. **Executive summary:** [`CONSOLIDATION_SUMMARY.md`](CONSOLIDATION_SUMMARY.md)
 2. **Go/no-go checklist:** [`implementation-status.md`](implementation-status.md) → "Go/No-Go Checklist for 1.0 Release"
-3. **Ship date:** Ready (with terminal input routing quick fix, ~1–2 days)
+3. **Ship date:** Ready (documentation of deferred items in progress)
 4. **Roadmap:** Phases outlined in implementation-status.md
 
 ---
@@ -47,7 +47,7 @@ Welcome! This directory contains the unified architecture and implementation sta
 
 ### Core Architecture
 - **[`architecture.md`](architecture.md)** — Unified system architecture
-  - High-level overview of AetherOS
+  - High-level overview of DominionOS
   - 17 subsystems, layer-by-layer breakdown
   - Design tensions and resolutions
   - Status quo and maturity assessment
@@ -112,14 +112,14 @@ Welcome! This directory contains the unified architecture and implementation sta
   - Gap: Distributed firewall (single-node only)
 - **Browser & Web Stack** — Native + legacy web, Tor, DOM, JS
   - Status: SHIPPED (90% aligned)
-  - Gap: Terminal input routing (small fix)
+  - Gap: Tor SOCKS kernel integration
 
 ### Layer 5: Computing & Rendering (Stages 8–10)
 - **Rendering & Graphics** — 2D/3D unified, Nanite, ATW, HDR, text
   - Status: SHIPPED (95% aligned)
 - **Desktop, Shell & Workspace** — 9 apps, window manager, composable UI
   - Status: SHIPPED (85% aligned)
-  - Gap: Terminal interactivity, architecture fragmentation
+  - Gap: Shell/workspace architecture fragmentation
 
 ### Layer 6: Language & AI (Stages 3–9)
 - **Language & Runtime (Dominion)** — Safe language, FFI, LSP

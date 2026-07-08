@@ -130,6 +130,15 @@ pub struct BpeTokenizer {
     pub eos_id: u32,
     pub bos_id: u32,
     pub unk_id: u32,
+    /// Lookup: token byte sequence → token id. Built once at construction so
+    /// `encode` never linearly scans the vocabulary. Used both for base
+    /// (single-byte) token lookup and for resolving merged-token ids.
+    token_index: BTreeMap<Vec<u8>, u32>,
+    /// Lookup: adjacent id pair `(a, b)` → `(merge rank, merged token id)`.
+    /// Lower rank = higher priority. Built once at construction so `encode`
+    /// ranks candidate merges with an `O(log vocab)` map lookup instead of a
+    /// linear scan of the merge/vocab tables.
+    merge_map: BTreeMap<(u32, u32), (u32, u32)>,
 }
 
 impl BpeTokenizer {
@@ -141,113 +150,99 @@ impl BpeTokenizer {
         eos_id: u32,
         unk_id: u32,
     ) -> Self {
-        BpeTokenizer { vocab, merges, special_tokens: BTreeMap::new(), eos_id, bos_id, unk_id }
+        let (token_index, merge_map) = Self::build_indices(&vocab, &merges, unk_id);
+        BpeTokenizer {
+            vocab,
+            merges,
+            special_tokens: BTreeMap::new(),
+            eos_id,
+            bos_id,
+            unk_id,
+            token_index,
+            merge_map,
+        }
+    }
+
+    /// Build the encode-time lookup tables once from the vocab and merge rules.
+    ///
+    /// * `token_index` maps every token's byte sequence to its id (keeping the
+    ///   lowest id when duplicate byte sequences exist, so the fundamental
+    ///   single-byte base tokens win over any later duplicates).
+    /// * `merge_map` maps each merge pair `(a, b)` to `(rank, merged_id)`, where
+    ///   `merged_id` is the vocab id of the concatenation `vocab[a] ++ vocab[b]`.
+    fn build_indices(
+        vocab: &[Vec<u8>],
+        merges: &[(u32, u32)],
+        unk_id: u32,
+    ) -> (BTreeMap<Vec<u8>, u32>, BTreeMap<(u32, u32), (u32, u32)>) {
+        let mut token_index: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+        for (id, bytes) in vocab.iter().enumerate() {
+            token_index.entry(bytes.clone()).or_insert(id as u32);
+        }
+        let mut merge_map: BTreeMap<(u32, u32), (u32, u32)> = BTreeMap::new();
+        for (rank, &(a, b)) in merges.iter().enumerate() {
+            let mut merged_bytes: Vec<u8> = Vec::new();
+            if let Some(ab) = vocab.get(a as usize) {
+                merged_bytes.extend_from_slice(ab);
+            }
+            if let Some(bb) = vocab.get(b as usize) {
+                merged_bytes.extend_from_slice(bb);
+            }
+            let merged_id = token_index.get(merged_bytes.as_slice()).copied().unwrap_or(unk_id);
+            merge_map.insert((a, b), (rank as u32, merged_id));
+        }
+        (token_index, merge_map)
     }
 
     /// Tokenize UTF-8 text bytes into token ids.
     ///
-    /// Algorithm:
-    /// 1. Split input into UTF-8 scalar byte sequences (multi-byte chars stay together).
-    /// 2. Map each character's bytes to its vocab id; unknown bytes → `unk_id`.
-    /// 3. Iteratively apply merge rules in priority order until no merge fires.
+    /// Algorithm (standard byte-level BPE):
+    /// 1. Map each raw input **byte** to its base token id. Every one of the 256
+    ///    byte values is a base token, so multi-byte UTF-8 characters are simply
+    ///    a run of base tokens — the input always round-trips through
+    ///    `decode(encode(s))` even when no merge rule applies. Unknown bytes
+    ///    (absent from the vocab) fall back to `unk_id`.
+    /// 2. Iteratively apply the highest-priority (lowest-rank) merge rule present
+    ///    among adjacent pairs until no merge fires.
+    ///
+    /// Base-token and merge-pair resolution both use the pre-built `token_index` /
+    /// `merge_map` maps, so no step scans the vocabulary linearly: base
+    /// tokenization is `O(len · log vocab)` and each merge lookup is
+    /// `O(log vocab)`.
     pub fn encode(&self, text: &[u8]) -> Vec<u32> {
         if text.is_empty() {
             return Vec::new();
         }
 
-        // Build reverse map: bytes → id (scan whole vocab once).
-        // For single-byte initial tokens we need byte → id.
-        let mut byte_to_id: [u32; 256] = [self.unk_id; 256];
-        for (id, token_bytes) in self.vocab.iter().enumerate() {
-            if token_bytes.len() == 1 {
-                byte_to_id[token_bytes[0] as usize] = id as u32;
-            }
-        }
-
-        // Step 1+2: split UTF-8 characters → initial token ids.
-        // We iterate over the raw bytes and collect UTF-8 code-point byte runs.
+        // Step 1: byte-level base tokenization. One base token per raw byte.
         let mut ids: Vec<u32> = Vec::with_capacity(text.len());
-        let mut i = 0;
-        while i < text.len() {
-            let b = text[i];
-            // Determine UTF-8 character length.
-            let char_len = if b < 0x80 {
-                1
-            } else if b & 0xE0 == 0xC0 {
-                2
-            } else if b & 0xF0 == 0xE0 {
-                3
-            } else if b & 0xF8 == 0xF0 {
-                4
-            } else {
-                1 // continuation or invalid — treat as single byte
-            };
-            let char_bytes = &text[i..usize::min(i + char_len, text.len())];
-            // Try to find exact match in vocab.
-            let mut found = self.unk_id;
-            for (vid, vbytes) in self.vocab.iter().enumerate() {
-                if vbytes.as_slice() == char_bytes {
-                    found = vid as u32;
-                    break;
-                }
-            }
-            if found == self.unk_id && char_bytes.len() == 1 {
-                found = byte_to_id[char_bytes[0] as usize];
-            }
-            ids.push(found);
-            i += char_bytes.len();
+        for &b in text {
+            let id = self
+                .token_index
+                .get([b].as_slice())
+                .copied()
+                .unwrap_or(self.unk_id);
+            ids.push(id);
         }
 
-        // Step 3: iteratively apply merge rules.
-        // Build a lookup: (a, b) → (priority, merged_id).
-        // merged_id = vocab.len() is the base for merged tokens, but in standard BPE
-        // the merged token id equals the index in the merge list offset by the initial
-        // vocab size. Here we follow the convention that merged tokens are already in
-        // the vocab (the vocab passed in includes all merged tokens).
-        //
-        // We build a BTreeMap from (a, b) → (priority, merged_id).
-        let mut merge_map: BTreeMap<(u32, u32), (usize, u32)> = BTreeMap::new();
-        for (priority, &(a, b)) in self.merges.iter().enumerate() {
-            // The merged token id is the vocab index of the bytes that are the
-            // concatenation of vocab[a] and vocab[b].
-            let mut merged_bytes: Vec<u8> = Vec::new();
-            if let Some(ab) = self.vocab.get(a as usize) {
-                merged_bytes.extend_from_slice(ab);
-            }
-            if let Some(bb) = self.vocab.get(b as usize) {
-                merged_bytes.extend_from_slice(bb);
-            }
-            // Find the merged id in vocab.
-            let mut merged_id = self.unk_id;
-            for (vid, vbytes) in self.vocab.iter().enumerate() {
-                if *vbytes == merged_bytes {
-                    merged_id = vid as u32;
-                    break;
-                }
-            }
-            merge_map.insert((a, b), (priority, merged_id));
-        }
-
-        // Repeatedly scan for the highest-priority (lowest index) applicable merge.
+        // Step 2: repeatedly apply the highest-priority applicable merge.
         loop {
             if ids.len() < 2 {
                 break;
             }
-            // Find the best merge across all adjacent pairs.
-            let mut best_priority: Option<usize> = None;
+            let mut best_rank: Option<u32> = None;
             let mut best_pos: usize = 0;
             let mut best_merged: u32 = self.unk_id;
             for j in 0..ids.len() - 1 {
-                let pair = (ids[j], ids[j + 1]);
-                if let Some(&(prio, merged)) = merge_map.get(&pair) {
-                    if best_priority.is_none() || prio < best_priority.unwrap() {
-                        best_priority = Some(prio);
+                if let Some(&(rank, merged)) = self.merge_map.get(&(ids[j], ids[j + 1])) {
+                    if best_rank.map_or(true, |br| rank < br) {
+                        best_rank = Some(rank);
                         best_pos = j;
                         best_merged = merged;
                     }
                 }
             }
-            if best_priority.is_none() {
+            if best_rank.is_none() {
                 break;
             }
             // Apply: replace ids[best_pos] and ids[best_pos+1] with best_merged.
@@ -275,13 +270,17 @@ impl BpeTokenizer {
     pub fn byte_level(eos_id: u32, bos_id: u32) -> Self {
         let vocab: Vec<Vec<u8>> = (0u8..=255).map(|b| alloc::vec![b]).collect();
         let unk_id = 0u32; // byte 0x00 as catch-all unknown
+        let merges: Vec<(u32, u32)> = Vec::new();
+        let (token_index, merge_map) = Self::build_indices(&vocab, &merges, unk_id);
         BpeTokenizer {
             vocab,
-            merges: Vec::new(),
+            merges,
             special_tokens: BTreeMap::new(),
             eos_id,
             bos_id,
             unk_id,
+            token_index,
+            merge_map,
         }
     }
 }
@@ -530,6 +529,41 @@ mod tests {
     }
 
     #[test]
+    fn byte_level_roundtrip_utf8() {
+        // Multi-byte UTF-8: accented latin (2-byte), an em dash (3-byte),
+        // CJK ideographs (3-byte each) and an emoji (4-byte). A byte-level BPE
+        // must round-trip all of these exactly, since each raw byte is a base
+        // token — no lossy collapse to a single `unk` per character.
+        let tok = BpeTokenizer::byte_level(1, 0);
+        let text = "héllo — 世界 🚀".as_bytes();
+        let ids = tok.encode(text);
+        // No merges, so one base token per raw byte, and every byte is known.
+        assert_eq!(ids.len(), text.len(), "byte-level encode is one token per byte");
+        let decoded = tok.decode(&ids);
+        assert_eq!(decoded, text, "multi-byte UTF-8 must round-trip exactly");
+        // And it reconstructs as the original &str.
+        assert_eq!(core::str::from_utf8(&decoded).unwrap(), "héllo — 世界 🚀");
+    }
+
+    #[test]
+    fn byte_level_roundtrip_empty() {
+        let tok = BpeTokenizer::byte_level(1, 0);
+        let ids = tok.encode(b"");
+        assert!(ids.is_empty());
+        assert!(tok.decode(&ids).is_empty(), "empty string must round-trip");
+    }
+
+    #[test]
+    fn byte_level_roundtrip_all_bytes() {
+        // Every one of the 256 byte values is a base token and must round-trip.
+        let tok = BpeTokenizer::byte_level(1, 0);
+        let text: Vec<u8> = (0u8..=255).collect();
+        let ids = tok.encode(&text);
+        assert_eq!(ids.len(), 256);
+        assert_eq!(tok.decode(&ids), text);
+    }
+
+    #[test]
     fn bpe_merge_applied() {
         // Vocab: 0=b'a', 1=b'b', 2=b'ab' (merged).
         let vocab: Vec<Vec<u8>> = vec![b"a".to_vec(), b"b".to_vec(), b"ab".to_vec()];
@@ -550,6 +584,34 @@ mod tests {
         let ids = tok.encode(b"abc");
         // "a"+"b" merges to 3, "c" stays as 2 → [3, 2]
         assert_eq!(ids, vec![3u32, 2u32]);
+    }
+
+    #[test]
+    fn bpe_merge_sequence_priority() {
+        // Known merge sequence; pins the exact token ids so the map-based
+        // refactor is proven to produce identical output to a linear scan.
+        // Vocab: 0=a 1=b 2=c 3=ab 4=bc 5=abc
+        let vocab: Vec<Vec<u8>> = vec![
+            b"a".to_vec(),
+            b"b".to_vec(),
+            b"c".to_vec(),
+            b"ab".to_vec(),
+            b"bc".to_vec(),
+            b"abc".to_vec(),
+        ];
+        // Rank order (priority): (a,b)->ab first, then (ab,c)->abc, then (b,c)->bc.
+        let merges = vec![(0u32, 1u32), (3u32, 2u32), (1u32, 2u32)];
+        let tok = BpeTokenizer::new(vocab, merges, 255, 254, 0);
+
+        // "abc": highest-priority merge (a,b)->ab wins over (b,c)->bc, giving
+        // [3, 2]; then (ab,c)->abc fires → [5].
+        assert_eq!(tok.encode(b"abc"), vec![5u32]);
+        // "bc": only (b,c)->bc applies → [4].
+        assert_eq!(tok.encode(b"bc"), vec![4u32]);
+        // "abca": [a b c a] → (a,b) → [ab c a] → (ab,c) → [abc a] → [5, 0].
+        assert_eq!(tok.encode(b"abca"), vec![5u32, 0u32]);
+        // Round-trips regardless of merges.
+        assert_eq!(tok.decode(&tok.encode(b"abcabc")), b"abcabc".to_vec());
     }
 
     #[test]

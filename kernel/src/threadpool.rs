@@ -32,7 +32,7 @@
 use dominion_core::parallel::Spawn;
 use alloc::vec::Vec;
 use core::hint::spin_loop;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // ── Global pool state (set by BSP before each batch, read by all workers) ─────
 
@@ -50,9 +50,6 @@ static KPOOL_FN_DATA: AtomicU64 = AtomicU64::new(0);
 static KPOOL_FN_VTBL: AtomicU64 = AtomicU64::new(0);
 /// Raw pointer to `Vec<Option<Vec<f64>>>` — the result buffer allocated by BSP.
 static KPOOL_RESULTS: AtomicU64 = AtomicU64::new(0);
-/// Re-entrancy guard for `drain_tasks`. Prevents the watchdog from calling
-/// `drain_tasks` while it is already executing on the same core (BSP).
-static KPOOL_DRAINING: AtomicBool = AtomicBool::new(false);
 
 // ── Lifetime metrics (monotonically accumulate) ───────────────────────────────
 
@@ -105,18 +102,14 @@ unsafe fn call_kpool_task(idx: usize) -> Vec<f64> {
 /// Claim and execute all available tasks in the current batch.
 /// Called by both BSP (directly in `run`) and APs (via `ap_poll_once`).
 ///
-/// Re-entrancy guard: if `drain_tasks` is already running on this core (e.g.
-/// from the watchdog path inside `KernelSpawn::run`), the second call returns
-/// immediately. Without the guard the BSP's watchdog could call `drain_tasks`
-/// while still inside the first call, corrupting the `KPOOL_DRAINING` state
-/// and resetting `watchdog` to zero in an infinite loop when APs are truly hung.
+/// Every core drains concurrently: task indices are claimed by a monotonic
+/// `KPOOL_NEXT.fetch_add`, so each index is executed by exactly one worker and
+/// result slots are written without aliasing. There is deliberately no global
+/// serialization here — a process-wide gate would let one core lock out all the
+/// others and collapse SMP fan-out onto a single core. (`ap_poll_once` advances
+/// its per-AP `gen_seen` before calling in, so a core that finds no work left to
+/// claim simply returns; it will not re-enter this batch.)
 fn drain_tasks() {
-    // Acquire the draining flag. If it was already true another call on this
-    // core (BSP watchdog path) is already draining — bail out immediately.
-    if KPOOL_DRAINING.swap(true, Ordering::Acquire) {
-        return;
-    }
-
     let n = KPOOL_N.load(Ordering::Acquire);
     loop {
         let idx = KPOOL_NEXT.fetch_add(1, Ordering::SeqCst);
@@ -137,8 +130,6 @@ fn drain_tasks() {
         KPOOL_DONE.fetch_add(1, Ordering::Release);
         KPOOL_TOTAL_COMPLETED.fetch_add(1, Ordering::Relaxed);
     }
-
-    KPOOL_DRAINING.store(false, Ordering::Release);
 }
 
 // ── AP poll hook (called from smp::worker_loop) ───────────────────────────────
@@ -231,9 +222,24 @@ impl Spawn for KernelSpawn {
             spin_loop();
             watchdog += 1;
             if watchdog > 100_000_000 {
-                // AP(s) unresponsive — run remaining tasks on BSP.
-                drain_tasks();
-                watchdog = 0;
+                // AP(s) unresponsive. A worker may have claimed a task index via
+                // KPOOL_NEXT.fetch_add and then stalled before writing its slot.
+                // KPOOL_NEXT is monotonic and cannot rewind, so `drain_tasks`
+                // can no longer reach that slot — re-draining is a no-op and the
+                // spin loop would never terminate. Instead, scan the results
+                // buffer directly and re-execute any slot still unwritten on the
+                // BSP (`call_kpool_task` is a pure `Fn`, so re-execution is
+                // idempotent), then stop waiting. A truly hung AP will not race
+                // these writes after 100 M spin iterations.
+                let mut reclaimed = 0u64;
+                for (idx, slot) in results.iter_mut().enumerate() {
+                    if slot.is_none() {
+                        *slot = Some(unsafe { call_kpool_task(idx) });
+                        reclaimed += 1;
+                    }
+                }
+                KPOOL_TOTAL_COMPLETED.fetch_add(reclaimed, Ordering::Relaxed);
+                break;
             }
         }
 

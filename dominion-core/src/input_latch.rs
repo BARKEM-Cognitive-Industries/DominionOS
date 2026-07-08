@@ -87,26 +87,47 @@ fn decode(w0: u64, w1: u64) -> InputCoord {
 struct AtomicCoordCell {
     w0: AtomicU64,
     w1: AtomicU64,
+    /// Seqlock version: even = stable, odd = write in progress. The single-writer ISR bumps
+    /// it odd before the two word stores and even after; a reader that sees an odd or changed
+    /// value between its reads retries. Without this a reader could pair word 0 from event
+    /// N+1 with word 1 from event N (a torn cross-event coordinate — new position, stale
+    /// buttons/timestamp), because the two loads are otherwise independent.
+    seq: AtomicU32,
 }
 
 impl AtomicCoordCell {
     const fn new() -> Self {
-        Self { w0: AtomicU64::new(0), w1: AtomicU64::new(0) }
+        Self { w0: AtomicU64::new(0), w1: AtomicU64::new(0), seq: AtomicU32::new(0) }
     }
 
     fn store(&self, c: &InputCoord) {
         let (w0, w1) = encode(c);
+        let s = self.seq.load(Ordering::Relaxed);
+        // Bump to odd — readers now see a write in progress and will retry.
+        self.seq.store(s.wrapping_add(1), Ordering::Release);
         self.w0.store(w0, Ordering::Release);
         self.w1.store(w1, Ordering::Release);
+        // Bump to even — the pair is committed and stable.
+        self.seq.store(s.wrapping_add(2), Ordering::Release);
     }
 
     fn load(&self) -> Option<InputCoord> {
-        let w1 = self.w1.load(Ordering::Acquire);
-        if w1 == 0 {
-            return None;
+        loop {
+            let s1 = self.seq.load(Ordering::Acquire);
+            if s1 & 1 != 0 {
+                continue; // write in progress — spin (single ISR writer completes quickly)
+            }
+            let w1 = self.w1.load(Ordering::Acquire);
+            let w0 = self.w0.load(Ordering::Acquire);
+            let s2 = self.seq.load(Ordering::Acquire);
+            if s1 == s2 {
+                if w1 == 0 {
+                    return None;
+                }
+                return Some(decode(w0, w1));
+            }
+            // The writer ran between our two reads — retry to avoid a torn coordinate.
         }
-        let w0 = self.w0.load(Ordering::Acquire);
-        Some(decode(w0, w1))
     }
 }
 
@@ -185,10 +206,14 @@ impl<const CAP: usize> InputRingBuffer<CAP> {
     }
 
     /// Current number of unconsumed entries.
+    ///
+    /// Clamped to `CAP`: after an overflow the head can run more than `CAP` ahead of a
+    /// stalled tail, but the ring only physically holds `CAP` entries, so the count is
+    /// capped rather than reported as a growing, bogus value.
     pub fn len(&self) -> usize {
         let h = self.head.load(Ordering::Acquire);
         let t = self.tail.load(Ordering::Acquire);
-        (h.wrapping_sub(t)) as usize
+        (h.wrapping_sub(t) as usize).min(CAP)
     }
 
     /// Write a new coordinate from the input interrupt handler.  Never blocks.
@@ -240,10 +265,19 @@ impl<const CAP: usize> InputRingBuffer<CAP> {
     pub fn drain_into(&self, out: &mut [InputCoord]) -> usize {
         let mut count = 0;
         while count < out.len() {
-            let t = self.tail.load(Ordering::Acquire);
+            let mut t = self.tail.load(Ordering::Acquire);
             let h = self.head.load(Ordering::Acquire);
             if t == h {
                 break; // empty
+            }
+            // Overrun recovery: if the producer has lapped us (more than CAP entries pushed
+            // since our tail), the slots from tail up to head-CAP have been overwritten and
+            // their seq no longer matches expected_seq. Fast-forward tail to the oldest slot
+            // the ring still physically holds so draining resynchronises instead of stalling
+            // at 0 forever. tail stays consumer-owned, preserving the SPSC invariant.
+            if h.wrapping_sub(t) as usize > CAP {
+                t = h.wrapping_sub(CAP as u32);
+                self.tail.store(t, Ordering::Release);
             }
             let slot = &self.slots[self.mask(t)];
             // Spin until the slot is committed (odd seq matching t).

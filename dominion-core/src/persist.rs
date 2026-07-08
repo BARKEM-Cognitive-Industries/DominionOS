@@ -151,7 +151,22 @@ impl Persistence {
         }
         let len = u64::from_le_bytes(sb[8..16].try_into().unwrap()) as usize;
         let nblocks = len.div_ceil(BLOCK_SIZE);
-        let mut payload = alloc::vec![0u8; nblocks * BLOCK_SIZE];
+        // `len` comes from untrusted on-disk superblock bytes. Refuse an image
+        // whose payload run cannot physically fit on the device *before*
+        // allocating, so a corrupt or hostile length (e.g. 2^40) cannot force a
+        // huge, OOM-aborting allocation. Mirror the write path's `Full` guard and
+        // use checked arithmetic throughout (an overflowing run reads as an empty
+        // slot rather than an undersized buffer).
+        let fits = (nblocks as u64)
+            .checked_add(1)
+            .and_then(|run| start_lba.checked_add(run))
+            .is_some_and(|end| end <= dev.block_count());
+        let buf_len = nblocks.checked_mul(BLOCK_SIZE);
+        let buf_len = match (fits, buf_len) {
+            (true, Some(n)) => n,
+            _ => return Ok(None),
+        };
+        let mut payload = alloc::vec![0u8; buf_len];
         if nblocks > 0 {
             dev.read_blocks(start_lba + 1, &mut payload)?;
         }

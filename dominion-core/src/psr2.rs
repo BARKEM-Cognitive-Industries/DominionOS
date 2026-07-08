@@ -158,12 +158,13 @@ impl DamageTracker {
             // Nothing changed.
             self.static_frames = self.static_frames.saturating_add(1);
             if self.static_frames >= IDLE_THRESHOLD {
+                // Enough consecutive static frames — the panel may self-refresh.
                 self.state = Psr2State::Idle;
                 None
             } else {
-                // Transitioning to idle — still send a clean frame so the
-                // panel has up-to-date content before going to sleep.
-                self.state = Psr2State::Idle;
+                // Not idle yet — keep the link active until the threshold so
+                // the panel has up-to-date content before going to sleep.
+                self.state = Psr2State::Active;
                 None
             }
         }
@@ -223,8 +224,10 @@ impl ScrollVelocityTracker {
             self.count += 1;
         }
         // Recompute smoothed velocity as mean of history window.
+        // Divide by the number of valid samples so warm-up (buffer not yet
+        // full of real deltas) is not under-reported by the zero padding.
         let sum: f32 = self.history.iter().copied().sum();
-        self.velocity_px_per_frame = sum / 8.0;
+        self.velocity_px_per_frame = sum / (self.count.max(1) as f32);
     }
 
     /// Returns `true` if the current velocity exceeds the configured threshold

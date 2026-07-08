@@ -48,7 +48,14 @@ impl TaggedCap {
 
     /// Bounds check: is `[addr, addr+span)` inside this capability's extent?
     pub fn covers(&self, addr: u64, span: u64) -> bool {
-        addr >= self.base && addr.checked_add(span).map(|e| e <= self.base + self.len).unwrap_or(false)
+        // Both the request end (`addr+span`) and the capability limit (`base+len`)
+        // are computed with checked arithmetic so a capability minted near the top of
+        // the address space fails **closed** (returns false) instead of panicking in
+        // a debug build or wrapping to a small value in release.
+        match (addr.checked_add(span), self.base.checked_add(self.len)) {
+            (Some(end), Some(limit)) => addr >= self.base && end <= limit,
+            _ => false,
+        }
     }
 
     pub fn allows(&self, p: u8) -> bool {
@@ -110,8 +117,13 @@ impl CapabilityTags for SoftwareTags {
         if !self.validate(cap) {
             return None;
         }
-        // Monotonicity: bounds must tighten and perms must be a subset.
-        let within = base >= cap.base && base.checked_add(len)? <= cap.base + cap.len;
+        // Monotonicity: bounds must tighten and perms must be a subset. Both ends are
+        // checked so an overflowing bound fails closed (refuses the derivation) rather
+        // than panicking or wrapping.
+        let within = match (base.checked_add(len), cap.base.checked_add(cap.len)) {
+            (Some(end), Some(limit)) => base >= cap.base && end <= limit,
+            _ => false,
+        };
         let subset = perms & cap.perms == perms;
         if within && subset {
             Some(self.mint(base, len, perms))

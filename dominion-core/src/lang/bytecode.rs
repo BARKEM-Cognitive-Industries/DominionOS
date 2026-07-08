@@ -1,8 +1,8 @@
-//! Aether bytecode — the instruction set the compiler emits and the VM executes.
+//! Dominion bytecode — the instruction set the compiler emits and the VM executes.
 //!
 //! OWNED BY: Compiler/VM/JIT agent (workstream C).
 //!
-//! This is the real ISA for the Aether stack machine, not a thin wrapper over the
+//! This is the real ISA for the Dominion stack machine, not a thin wrapper over the
 //! tree-walking interpreter. A whole program lowers to one [`CompiledProgram`]: a
 //! top-level [`Chunk`] (the statements that form the REPL result) plus one [`Chunk`]
 //! per user function. Each chunk carries its own constant pool and a flat `code`

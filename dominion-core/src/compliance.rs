@@ -105,7 +105,11 @@ impl ResidencyPolicy {
     pub fn may_transfer(&self, from: Domain, to: Domain) -> bool {
         match (self.region.get(&from), self.region.get(&to)) {
             (Some(fr), Some(tr)) => fr == tr || self.allowed.contains(&(fr.clone(), tr.clone())),
-            // An unpinned endpoint imposes no residency restriction.
+            // A pinned source must not leak to an unpinned (unclassified) destination:
+            // residency is default-deny for pinned data.
+            (Some(_), None) => false,
+            // An unpinned source imposes no residency restriction (both-None is the
+            // documented fully-unrestricted case).
             _ => true,
         }
     }

@@ -585,14 +585,14 @@ fn node_line(node: &AgentNode) -> String {
             if *focused   { flags.push("focused"); }
             if *minimised { flags.push("minimised"); }
             if *maximised { flags.push("maximised"); }
-            attrs("window", &[("id", &id), ("app", app), ("title", &q(title))], flags.as_slice())
+            attrs("window", &[("id", &id), ("app", &q(app)), ("title", &q(title))], flags.as_slice())
         }
 
         NodeState::Icon { label, app } =>
-            attrs("icon", &[("id", &id), ("label", &q(label)), ("app", app)], &[]),
+            attrs("icon", &[("id", &id), ("label", &q(label)), ("app", &q(app))], &[]),
 
         NodeState::TaskEntry { label, app, focused } =>
-            attrs("task", &[("id", &id), ("label", &q(label)), ("app", app)],
+            attrs("task", &[("id", &id), ("label", &q(label)), ("app", &q(app))],
                   if *focused { &["focused"] } else { &[] }),
 
         NodeState::Button { label, enabled } =>
@@ -601,7 +601,7 @@ fn node_line(node: &AgentNode) -> String {
 
         NodeState::TextField { label, value, placeholder } =>
             attrs("textfield", &[("id", &id), ("label", &q(label)), ("value", &q(value)),
-                                  ("ph", placeholder)], &[]),
+                                  ("ph", &q(placeholder))], &[]),
 
         NodeState::Label { text } =>
             attrs("label", &[("id", &id), ("text", &q(text))], &[]),
@@ -617,7 +617,7 @@ fn node_line(node: &AgentNode) -> String {
         NodeState::Editor { path, lines, cursor_line, cursor_col, modified, lang } => {
             let p = path.as_deref().unwrap_or("unsaved");
             let l = lang.as_deref().unwrap_or("plain");
-            attrs("editor", &[("id", &id), ("path", p), ("lang", l),
+            attrs("editor", &[("id", &id), ("path", &q(p)), ("lang", &q(l)),
                                ("lines", &lines.to_string()),
                                ("cursor", &format!("{}:{}", cursor_line, cursor_col)),
                                ("modified", if *modified { "true" } else { "false" })], &[])
@@ -628,35 +628,35 @@ fn node_line(node: &AgentNode) -> String {
             if *loading     { flags.push("loading"); }
             if !*can_back   { flags.push("no_back"); }
             if !*can_forward { flags.push("no_fwd"); }
-            attrs("browser", &[("id", &id), ("url", url), ("title", &q(title))],
+            attrs("browser", &[("id", &id), ("url", &q(url)), ("title", &q(title))],
                   flags.as_slice())
         }
 
         NodeState::FileEntry { name, path, is_dir, size } =>
-            attrs("file", &[("id", &id), ("name", &q(name)), ("path", path),
+            attrs("file", &[("id", &id), ("name", &q(name)), ("path", &q(path)),
                              ("size", &size.to_string())],
                   if *is_dir { &["dir"] } else { &[] }),
 
         NodeState::Process { pid, name, cpu_pct, mem_kb } =>
-            attrs("process", &[("id", &id), ("pid", &pid.to_string()), ("name", name),
+            attrs("process", &[("id", &id), ("pid", &pid.to_string()), ("name", &q(name)),
                                 ("cpu", &format!("{}%", cpu_pct)),
                                 ("mem", &format!("{}KB", mem_kb))], &[]),
 
         NodeState::VmInstance { id: vm_id, state, cpu_count, mem_mb } =>
-            attrs("vm", &[("id", &id), ("vm_id", vm_id), ("state", state.as_str()),
+            attrs("vm", &[("id", &id), ("vm_id", &q(vm_id)), ("state", state.as_str()),
                            ("cpus", &cpu_count.to_string()),
                            ("mem", &format!("{}MB", mem_mb))], &[]),
 
         NodeState::File { path, size, kind } =>
-            attrs("file", &[("id", &id), ("path", path), ("size", &size.to_string()),
-                             ("kind", kind)], &[]),
+            attrs("file", &[("id", &id), ("path", &q(path)), ("size", &size.to_string()),
+                             ("kind", &q(kind))], &[]),
 
         NodeState::DataStore { name, record_count } =>
             attrs("datastore", &[("id", &id), ("name", &q(name)),
                                    ("records", &record_count.to_string())], &[]),
 
         NodeState::NetworkIface { name, ip, up } =>
-            attrs("iface", &[("id", &id), ("name", name), ("ip", ip)],
+            attrs("iface", &[("id", &id), ("name", &q(name)), ("ip", &q(ip))],
                   if *up { &["up"] } else { &["down"] }),
 
         NodeState::Group { label } =>
@@ -686,11 +686,36 @@ fn attrs(tag: &str, kvs: &[(&str, &str)], flags: &[&str]) -> String {
     s
 }
 
-/// Wrap a string value in double quotes.
+/// Escape a free-form string so it cannot inject tree structure into the
+/// agent's textual view. `to_text()` output is fed to the embedded agent as a
+/// line-oriented `tag[k=v ...] +action` grammar, so an unescaped '\n' would
+/// forge a new node line and a '"'/']'/space would forge attributes, flags, or
+/// actions. We escape the delimiters and drop the structural bracket and any
+/// control characters entirely.
+fn esc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            // Drop the structural brackets and any control characters.
+            '[' | ']' => {}
+            c if (c as u32) < 0x20 => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Wrap a string value in double quotes, escaping its contents.
 fn q(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
+    let e = esc(s);
+    let mut out = String::with_capacity(e.len() + 2);
     out.push('"');
-    out.push_str(s);
+    out.push_str(&e);
     out.push('"');
     out
 }
@@ -779,10 +804,17 @@ impl AgentBus {
     pub fn dispatch(&mut self, action: AgentAction) -> AgentResult {
         let target = action.target;
 
-        // Fast path: id_map lookup.
+        // Fast path: id_map lookup. The mapped component may be stale (the node
+        // moved to another component since registration), in which case it
+        // reports NotFound for a target it no longer owns — so only return early
+        // on a definitive result, and otherwise fall through to the linear scan
+        // (which refreshes id_map with the true owner).
         if let Some(&idx) = self.id_map.get(&target) {
             if idx < self.entries.len() {
-                return self.entries[idx].component.agent_dispatch(action);
+                let res = self.entries[idx].component.agent_dispatch(action.clone());
+                if res != AgentResult::NotFound {
+                    return res;
+                }
             }
         }
 

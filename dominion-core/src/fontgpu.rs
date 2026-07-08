@@ -239,13 +239,15 @@ pub fn rasterize_glyph(
     for py in y0.max(0)..y1 {
         // Convert to EM space.
         let ey = (py - oy) as f32 / scale + outline.min.y;
-        let mut _winding = 0i32;
 
-        // Count signed crossings for each curve at row ey.
+        // Compute the X crossings for this scanline **once** — they depend only on
+        // the row `ey`, not on the pixel column — instead of re-sampling every curve
+        // for every pixel. Each entry is (EM-space x, winding direction).
+        let mut crossings: Vec<(f32, i32)> = Vec::new();
         for curve in &outline.curves {
             // Sample the curve at many t values to find crossings.
             // (A production shader would do this analytically.)
-            let steps = 32u32;
+            let steps = 16u32;
             let mut prev = curve.eval(0.0);
             for step in 1..=steps {
                 let t = step as f32 / steps as f32;
@@ -255,36 +257,22 @@ pub fn rasterize_glyph(
                     // X intersection via linear interpolation along segment.
                     let frac = (ey - prev.y) / (curr.y - prev.y);
                     let cx = prev.x + frac * (curr.x - prev.x);
-                    // Convert cx to pixel space.
-                    let px_cx = (cx - outline.min.x) * scale + ox as f32;
-                    // For pixels to the right of this intersection, toggle winding.
-                    // We'll mark which pixels get toggled.
-                    let _ = px_cx; // used below in column loop
-                    if curr.y > prev.y { _winding += 1; } else { _winding -= 1; }
+                    let dir = if curr.y > prev.y { 1 } else { -1 };
+                    crossings.push((cx, dir));
                 }
                 prev = curr;
             }
         }
 
-        // For each pixel in this row, count crossings to the left.
+        // For each pixel in this row, the winding number is the signed sum of the
+        // crossings that lie to its left (nonzero fill rule).
         for px in x0.max(0)..x1 {
             let ex = (px - ox) as f32 / scale + outline.min.x;
             let mut local_winding = 0i32;
 
-            for curve in &outline.curves {
-                let steps = 16u32;
-                let mut prev = curve.eval(0.0);
-                for step in 1..=steps {
-                    let t = step as f32 / steps as f32;
-                    let curr = curve.eval(t);
-                    if (prev.y <= ey && curr.y > ey) || (curr.y <= ey && prev.y > ey) {
-                        let frac = (ey - prev.y) / (curr.y - prev.y);
-                        let cx = prev.x + frac * (curr.x - prev.x);
-                        if cx < ex {
-                            if curr.y > prev.y { local_winding += 1; } else { local_winding -= 1; }
-                        }
-                    }
-                    prev = curr;
+            for &(cx, dir) in &crossings {
+                if cx < ex {
+                    local_winding += dir;
                 }
             }
 

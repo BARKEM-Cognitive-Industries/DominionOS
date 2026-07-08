@@ -92,10 +92,13 @@ fn pkg_signer() -> LamportSig {
 fn pkg_message(name: &str, version: &str, content_id: &Hash256, rights: Rights) -> Vec<u8> {
     let mut b = Vec::new();
     b.extend_from_slice(b"pkg:");
+    // Length-prefixed framing (not NUL delimiters) so the encoding is injective even
+    // when name/version contain NUL bytes — otherwise (name="a\0b",version="c") and
+    // (name="a",version="b\0c") would produce identical signed messages.
+    b.extend_from_slice(&(name.len() as u32).to_le_bytes());
     b.extend_from_slice(name.as_bytes());
-    b.push(0);
+    b.extend_from_slice(&(version.len() as u32).to_le_bytes());
     b.extend_from_slice(version.as_bytes());
-    b.push(0);
     b.extend_from_slice(&content_id.0);
     b.extend_from_slice(&rights.bits().to_le_bytes());
     b
@@ -112,24 +115,27 @@ impl Package {
     /// unique keypair we derive a **per-package sub-seed** before calling `keygen`:
     ///
     /// ```text
-    /// per_pkg_seed = H(secret_seed || content_id)
+    /// per_pkg_seed = H(secret_seed || pkg_message(name, version, content_id, rights))
     /// ```
     ///
-    /// `content_id` is already `H(content)`, so two packages whose byte content differs will
-    /// always produce different `per_pkg_seed` values even when `secret_seed` is the same
-    /// publisher root.  The resulting public key stored in the package is derived from
-    /// `per_pkg_seed`, not from `secret_seed` directly.
+    /// The sub-seed binds the **entire signed message**, not just `content_id`.  Binding only
+    /// `content_id` (which is `H(content)`) would let two packages with byte-identical content
+    /// but different `name`, `version`, or `requested_rights` reuse the same Lamport keypair
+    /// while signing *different* messages — the textbook one-time-signature reuse break that
+    /// leaks the secret key.  Because every distinct signed message now yields a distinct
+    /// `per_pkg_seed`, each signature uses a fresh keypair and the one-time property holds.
     pub fn seal(name: &str, version: &str, content: &[u8], requested_rights: Rights, secret_seed: &[u8]) -> Package {
         let content_id = Hash256::of(content);
-        // Derive a per-package sub-seed so that each package sealed under the same publisher
-        // root gets a unique Lamport keypair (prevents OTS seed-reuse forgery).
-        let mut sub_seed_input = Vec::with_capacity(secret_seed.len() + 32);
+        let msg = pkg_message(name, version, &content_id, requested_rights);
+        // Derive a per-package sub-seed from the full signed message so that each distinct
+        // (name, version, content, rights) tuple gets a unique Lamport keypair (prevents
+        // OTS seed-reuse forgery — see the doc comment above).
+        let mut sub_seed_input = Vec::with_capacity(secret_seed.len() + msg.len());
         sub_seed_input.extend_from_slice(secret_seed);
-        sub_seed_input.extend_from_slice(&content_id.0);
+        sub_seed_input.extend_from_slice(&msg);
         let per_pkg_seed = Hash256::of(&sub_seed_input);
         let signer = pkg_signer();
         let (secret, public) = signer.keygen(&per_pkg_seed.0);
-        let msg = pkg_message(name, version, &content_id, requested_rights);
         let signature = signer.sign(&secret, &msg);
         Package { name: String::from(name), version: String::from(version), content_id, requested_rights, public, signature }
     }
@@ -351,7 +357,11 @@ mod tests {
         assert_eq!(reg.install(tampered, &Capability::mint(0, 16, Rights::ALL)), Err(InstallError::Unsigned));
         // A package requesting WRITE installed under a READ-only grant is refused.
         let greedy = Package::seal("p", "1", b"bytes", Rights::WRITE, b"k");
-        // The key is already trusted from above (same seed "k" → same public key).
+        // NOTE: the per-package Lamport keypair now binds requested_rights (the OTS
+        // seed-reuse hardening), so this WRITE package derives a *different* public key than
+        // the READ package trusted above — trust its own key so it passes the signature/key
+        // check and we actually exercise the ExceedsGrant branch (not an earlier Unsigned).
+        reg.trust_key(greedy.public_key().to_vec());
         assert_eq!(reg.install(greedy, &Capability::mint(0, 16, Rights::READ)), Err(InstallError::ExceedsGrant));
     }
 
@@ -395,6 +405,29 @@ mod tests {
         // Both packages must still be individually valid under their own derived keys.
         assert!(pkg_a.verify(pkg_a.public_key()));
         assert!(pkg_b.verify(pkg_b.public_key()));
+    }
+
+    #[test]
+    fn same_seed_same_content_different_metadata_produces_distinct_lamport_keypairs() {
+        // Regression test for the more subtle OTS reuse: byte-identical *content* but a
+        // different name, version, or requested_rights still signs a different message
+        // (pkg_message binds all of them), so each must derive a distinct keypair.  If the
+        // sub-seed were bound to content_id alone these would collide over different
+        // messages — the catastrophic Lamport one-time reuse break.
+        let seed = b"shared-publisher-seed";
+        let content = b"identical-payload-bytes";
+        let base = Package::seal("tool", "1.0", content, Rights::READ, seed);
+        let diff_name = Package::seal("other", "1.0", content, Rights::READ, seed);
+        let diff_version = Package::seal("tool", "1.1", content, Rights::READ, seed);
+        let diff_rights = Package::seal("tool", "1.0", content, Rights::ALL, seed);
+        assert_ne!(base.public_key(), diff_name.public_key(), "name must affect the keypair");
+        assert_ne!(base.public_key(), diff_version.public_key(), "version must affect the keypair");
+        assert_ne!(base.public_key(), diff_rights.public_key(), "rights must affect the keypair");
+        // All remain individually valid under their own derived keys.
+        assert!(base.verify(base.public_key()));
+        assert!(diff_name.verify(diff_name.public_key()));
+        assert!(diff_version.verify(diff_version.public_key()));
+        assert!(diff_rights.verify(diff_rights.public_key()));
     }
 
     #[test]

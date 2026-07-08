@@ -229,6 +229,11 @@ impl Bbr {
                 self.plateau_rounds = 0;
             }
             self.prev_btlbw = self.btlbw;
+        } else if self.pacing_gain < 1.0 {
+            // Steady state: recover pacing after a transient post-Startup dip
+            // (on_loss briefly drops it to 0.75) rather than staying clamped for
+            // the rest of the connection and under-utilising the path.
+            self.pacing_gain = 1.0;
         }
     }
 

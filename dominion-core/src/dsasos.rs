@@ -193,8 +193,13 @@ impl CellSnapshot {
     /// A content digest binding the control state and the (ordered) working-set ids — equal
     /// iff two snapshots are the same migratable state.
     pub fn digest(&self) -> Hash256 {
-        let mut input = Vec::with_capacity(self.control.len() + self.working_set.len() * 40);
+        let mut input = Vec::with_capacity(8 + self.control.len() + 8 + self.working_set.len() * 40);
+        // Length-prefix the variable-length control and the working-set count so the
+        // serialization is injective: distinct snapshots cannot collide by shifting bytes
+        // between the control field and a working-set entry.
+        input.extend_from_slice(&(self.control.len() as u64).to_le_bytes());
         input.extend_from_slice(&self.control);
+        input.extend_from_slice(&(self.working_set.len() as u64).to_le_bytes());
         for r in &self.working_set {
             input.extend_from_slice(&r.id.0);
             input.extend_from_slice(&r.len.to_le_bytes());

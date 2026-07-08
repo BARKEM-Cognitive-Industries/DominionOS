@@ -25,6 +25,29 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// Snapshot `nblocks` 512-byte blocks starting at `start_lba`, so a destructive
+/// self-test write can be rolled back afterwards. The battery runs against
+/// whatever disk is actually attached — on bare metal that is the operator's real
+/// drive — so every raw write it performs must be paired with a restore, or the
+/// test would silently corrupt live data (e.g. the GPT partition-entry array at
+/// LBA 2-33, or a saved filesystem image). Returns `None` if the region can't be
+/// read, in which case the caller must not proceed with the destructive write.
+fn snapshot_region(
+    dev: &mut dyn dominion_core::persist::BlockDevice,
+    start_lba: u64,
+    nblocks: usize,
+) -> Option<Vec<u8>> {
+    let mut buf = alloc::vec![0u8; nblocks * 512];
+    dev.read_blocks(start_lba, &mut buf).ok()?;
+    Some(buf)
+}
+
+/// Write a snapshot taken by [`snapshot_region`] back, undoing a self-test's
+/// scratch write so the disk is left byte-for-byte as it was found.
+fn restore_region(dev: &mut dyn dominion_core::persist::BlockDevice, start_lba: u64, snap: &[u8]) {
+    let _ = dev.write_blocks(start_lba, snap);
+}
+
 /// Run the whole battery, invoking `report(name, passed)` for each check.
 /// Returns `(passed, failed)`.
 pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
@@ -192,29 +215,36 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
     let rcap = Capability::mint(0, 0x1000, Rights::READ);
     check(
         "codec text import/export round-trips",
-        {
-            let obj = reg.import(Some("a.txt"), b"hi there", &rcap).unwrap();
-            obj.kind == "Text" && reg.export(&obj, &rcap).as_deref() == Ok(b"hi there".as_ref())
+        match reg.import(Some("a.txt"), b"hi there", &rcap) {
+            Ok(obj) => {
+                obj.kind == "Text" && reg.export(&obj, &rcap).as_deref() == Ok(b"hi there".as_ref())
+            }
+            Err(_) => false,
         },
         &mut report,
     );
     check(
         "codec PPM decode/encode is lossless",
-        {
+        (|| -> Option<bool> {
             let raw = b"P6\n2 1\n255\n\xff\x00\x00\x00\xff\x00";
-            let img = reg.import(Some("p.ppm"), raw, &rcap).unwrap();
-            let back = reg.export(&img, &rcap).unwrap();
-            let img2 = reg.import(Some("p.ppm"), &back, &rcap).unwrap();
-            img.kind == "Image" && img.id() == img2.id()
-        },
+            let img = reg.import(Some("p.ppm"), raw, &rcap).ok()?;
+            let back = reg.export(&img, &rcap).ok()?;
+            let img2 = reg.import(Some("p.ppm"), &back, &rcap).ok()?;
+            Some(img.kind == "Image" && img.id() == img2.id())
+        })()
+        .unwrap_or(false),
         &mut report,
     );
     check(
         "codec unknown format preserved verbatim as Blob",
         {
             let weird = &[0u8, 159, 146, 150];
-            let obj = reg.import(Some("x.bin"), weird, &rcap).unwrap();
-            obj.kind == "Blob" && reg.export(&obj, &rcap).as_deref() == Ok(weird.as_ref())
+            match reg.import(Some("x.bin"), weird, &rcap) {
+                Ok(obj) => {
+                    obj.kind == "Blob" && reg.export(&obj, &rcap).as_deref() == Ok(weird.as_ref())
+                }
+                Err(_) => false,
+            }
         },
         &mut report,
     );
@@ -234,21 +264,21 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
     let txt = |s: &str| Object::new("Text").with("content", Datum::Text(String::from(s)));
     check(
         "vfs write/read round-trips over the graph",
-        {
-            vfs.write_object(&mut vg, "/etc/motd", txt("welcome"), &wcap).unwrap();
-            vfs.read_object(&vg, "/etc/motd", &wcap)
+        vfs.write_object(&mut vg, "/etc/motd", txt("welcome"), &wcap).is_ok()
+            && vfs
+                .read_object(&vg, "/etc/motd", &wcap)
                 .map(|o| o.get("content") == Some(&Datum::Text(String::from("welcome"))))
-                .unwrap_or(false)
-        },
+                .unwrap_or(false),
         &mut report,
     );
     check(
         "vfs edit creates new immutable object, keeps old",
-        {
-            let id1 = vfs.write_object(&mut vg, "/f", txt("v1"), &wcap).unwrap();
-            let id2 = vfs.write_object(&mut vg, "/f", txt("v2"), &wcap).unwrap();
-            id1 != id2 && vfs.resolve("/f") == Some(id2) && vg.contains(&id1)
-        },
+        (|| -> Option<bool> {
+            let id1 = vfs.write_object(&mut vg, "/f", txt("v1"), &wcap).ok()?;
+            let id2 = vfs.write_object(&mut vg, "/f", txt("v2"), &wcap).ok()?;
+            Some(id1 != id2 && vfs.resolve("/f") == Some(id2) && vg.contains(&id1))
+        })()
+        .unwrap_or(false),
         &mut report,
     );
     check(
@@ -264,23 +294,24 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
         {
             let r1 = vfs.snapshot_namespace(&mut vg);
             let r1b = vfs.snapshot_namespace(&mut vg);
-            vfs.write_object(&mut vg, "/etc/new", txt("z"), &wcap).unwrap();
+            let wrote = vfs.write_object(&mut vg, "/etc/new", txt("z"), &wcap).is_ok();
             let r2 = vfs.snapshot_namespace(&mut vg);
-            r1 == r1b && r1 != r2
+            wrote && r1 == r1b && r1 != r2
         },
         &mut report,
     );
     check(
         "vfs+codec end-to-end legacy file round-trip",
-        {
+        (|| -> Option<bool> {
             let raw = b"P6\n1 1\n255\n\x10\x20\x30";
-            let img = reg.import(Some("logo.ppm"), raw, &rcap).unwrap();
-            vfs.write_object(&mut vg, "/usr/share/logo.ppm", img, &wcap).unwrap();
-            let stored = vfs.read_object(&vg, "/usr/share/logo.ppm", &rcap).unwrap();
-            let exported = reg.export(stored, &rcap).unwrap();
-            let reimported = reg.import(Some("logo.ppm"), &exported, &rcap).unwrap();
-            stored.id() == reimported.id()
-        },
+            let img = reg.import(Some("logo.ppm"), raw, &rcap).ok()?;
+            vfs.write_object(&mut vg, "/usr/share/logo.ppm", img, &wcap).ok()?;
+            let stored = vfs.read_object(&vg, "/usr/share/logo.ppm", &rcap).ok()?;
+            let exported = reg.export(stored, &rcap).ok()?;
+            let reimported = reg.import(Some("logo.ppm"), &exported, &rcap).ok()?;
+            Some(stored.id() == reimported.id())
+        })()
+        .unwrap_or(false),
         &mut report,
     );
 
@@ -302,28 +333,49 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
     // confirm the content-addressed root survives. Uses the real virtio-blk disk
     // when attached, else a RAM disk — the persistence code path is identical.
     let (device_real, sector_ok, persist_ok) = crate::block::with_block_device(|dev, is_real| {
-        // Raw sector round-trip through the BlockDevice trait.
+        // Raw sector round-trip through the BlockDevice trait. `dev` is the real
+        // disk when one is attached, so bounds-check the LBA (mirroring the AHCI/NVMe
+        // helper below) and snapshot the sector first, restoring it afterwards so the
+        // test never leaves the disk mutated.
         let mut pattern = [0u8; 512];
         for (i, b) in pattern.iter_mut().enumerate() {
             *b = (i as u8) ^ 0xA5;
         }
         let lba = 64u64;
-        let sector_ok = dev.write_block(lba, &pattern).is_ok() && {
-            let mut readback = [0u8; 512];
-            dev.read_block(lba, &mut readback).is_ok() && readback == pattern
-        };
+        let sector_ok = dev.block_count() > lba
+            && match snapshot_region(dev, lba, 1) {
+                Some(saved) => {
+                    let ok = dev.write_block(lba, &pattern).is_ok() && {
+                        let mut readback = [0u8; 512];
+                        dev.read_block(lba, &mut readback).is_ok() && readback == pattern
+                    };
+                    restore_region(dev, lba, &saved);
+                    ok
+                }
+                None => false,
+            };
 
-        // Full graph persistence round-trip.
+        // Full graph persistence round-trip. `save` lays a superblock + payload at
+        // LBA 0 — the disk's MBR/GPT area on real hardware — so snapshot exactly the
+        // blocks it will touch and restore them once the round-trip is verified.
         let mut g = ObjectGraph::new();
         g.put(Object::new("Doc").with("n", Datum::Int(1)));
         g.put(Object::new("Doc").with("n", Datum::Int(2)));
         g.commit("persist test");
         let root_before = g.root_hash();
-        let persist_ok = Persistence::save(dev, &g).is_ok()
-            && matches!(
-                Persistence::load(dev),
-                Ok(Some(ref loaded)) if loaded.root_hash() == root_before
-            );
+        let image_blocks = 1 + g.serialize().len().div_ceil(512);
+        let persist_ok = match snapshot_region(dev, 0, image_blocks) {
+            Some(saved) => {
+                let ok = Persistence::save(dev, &g).is_ok()
+                    && matches!(
+                        Persistence::load(dev),
+                        Ok(Some(ref loaded)) if loaded.root_hash() == root_before
+                    );
+                restore_region(dev, 0, &saved);
+                ok
+            }
+            None => false,
+        };
         (is_real, sector_ok, persist_ok)
     });
     let _ = device_real;
@@ -343,10 +395,16 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
             if disk.block_count() <= lba {
                 return false;
             }
-            disk.write_block(lba, &pat).is_ok() && {
+            // On bare metal `disk` is the operator's real drive and LBA 8 sits inside
+            // the GPT partition-entry array, so save the sector, prove the DMA
+            // round-trip, then put the original contents back.
+            let Some(saved) = snapshot_region(disk, lba, 1) else { return false; };
+            let ok = disk.write_block(lba, &pat).is_ok() && {
                 let mut rb = [0u8; 512];
                 disk.read_block(lba, &mut rb).is_ok() && rb == pat
-            }
+            };
+            restore_region(disk, lba, &saved);
+            ok
         };
         let ahci_ok = match crate::ahci::probe() {
             Some(mut disk) => rw_roundtrip(&mut disk, 0x3C),
@@ -366,6 +424,14 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
             true
         };
         check("USB mass-storage (xHCI/BOT) write/read round-trip", usb_ok, &mut report);
+
+        // USB Mass Storage SCSI command path: exercise INQUIRY + the capacity learned by
+        // READ CAPACITY(10) at probe, driving the Bulk-Only Transport state machine over
+        // the already-owned USB handle (re-probing the boot xHCI controller would corrupt
+        // it). Skip-as-pass when no USB storage is attached, like the other
+        // optional-hardware probes above.
+        let msc_scsi_ok = crate::block::with_log_usb(|usb| usb.self_test()).unwrap_or(true);
+        check("USB mass-storage INQUIRY + READ CAPACITY (BOT/SCSI)", msc_scsi_ok, &mut report);
     }
 
     // ---- Debug bootlog: capture + persist-to-disk round-trip ----
@@ -404,17 +470,24 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
             return false;
         }
         let image = fs.to_bytes();
+        // Snapshot the LBA-8192 blob region and restore it afterwards so the test
+        // never overwrites a real filesystem image on an attached disk.
+        let image_blocks = 1 + image.len().div_ceil(512);
+        let Some(saved) = snapshot_region(dev, 8192, image_blocks) else { return false; };
         if Persistence::save_blob(dev, 8192, b"AEVFS001", &image).is_err() {
+            restore_region(dev, 8192, &saved);
             return false;
         }
-        match Persistence::load_blob(dev, 8192, b"AEVFS001") {
+        let ok = match Persistence::load_blob(dev, 8192, b"AEVFS001") {
             Ok(Some(blob)) => {
                 let mut booted = dominion_core::filesystem::FileSystem::new();
                 booted.restore_from_bytes(&blob)
                     && booted.read_text("/home/jayden/onmetal.txt").as_deref() == Some("survived reboot")
             }
             _ => false,
-        }
+        };
+        restore_region(dev, 8192, &saved);
+        ok
     });
     check("shell filesystem persists across save/load on disk", fs_persist_ok, &mut report);
 
@@ -427,9 +500,20 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
     budget.insert(worker_a, 2);
     budget.insert(worker_b, 3);
     let mut dispatched = 0u32;
+    let mut sched_ok = true;
     while let Some(id) = sched.next() {
         dispatched += 1;
-        let left = budget.get_mut(&id).unwrap();
+        // A scheduler regression must record a FAIL, not panic the kernel: bail
+        // cleanly if next() hands back an unknown id or over-dispatches a domain
+        // whose budget is already spent (which would underflow `*left`).
+        let Some(left) = budget.get_mut(&id) else {
+            sched_ok = false;
+            break;
+        };
+        if *left == 0 {
+            sched_ok = false;
+            break;
+        }
         *left -= 1;
         if *left == 0 {
             sched.finish(id);
@@ -442,7 +526,8 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
     }
     check(
         "scheduler runs all domains to completion (cooperative)",
-        dispatched == 5
+        sched_ok
+            && dispatched == 5
             && sched.live_count() == 0
             && sched.state(worker_a) == Some(DomainState::Finished),
         &mut report,
@@ -667,6 +752,26 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
         }
     }
 
+    // ---- real Intel e1000/e1000e Gigabit NIC ----
+    // A physical MAC (QEMU/VirtualBox default `-device e1000`, or a real Intel
+    // controller): map BAR0, read the station address out of the RAL0/RAH0
+    // registers, and confirm it is a valid non-zero hardware MAC. Non-destructive
+    // (no reset, no ring teardown), so it is safe even when the e1000 is the live
+    // interface. Skipped (pass) when no e1000-class device is attached.
+    match crate::e1000::probe() {
+        Some(p) => {
+            let mac_ok = p.mac != [0u8; 6];
+            crate::serial_println!(
+                "[e1000] {:#06x} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                p.device_id, p.mac[0], p.mac[1], p.mac[2], p.mac[3], p.mac[4], p.mac[5]
+            );
+            check("e1000 Intel Gigabit MAC read from real hardware", mac_ok, &mut report);
+        }
+        None => {
+            check("e1000 Intel Gigabit NIC (no device attached, skipped)", true, &mut report);
+        }
+    }
+
     // ---- feature 5: DominionLink (native content-addressed networking) ----
     {
         use dominion_core::dominionlink::{DominionId, DominionLink, Dht, DnsBridge};
@@ -785,16 +890,23 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
 
         // Persist to disk, reload, and re-export the file to identical bytes.
         let ok = crate::block::with_block_device(|dev, _| {
+            // Snapshot the LBA-0 image region (MBR/GPT area on real hardware) and
+            // restore it once the reload round-trip has been checked.
+            let image_blocks = 1 + g.serialize().len().div_ceil(512);
+            let Some(saved) = snapshot_region(dev, 0, image_blocks) else { return false; };
             if Persistence::save(dev, &g).is_err() {
+                restore_region(dev, 0, &saved);
                 return false;
             }
-            match Persistence::load(dev) {
+            let result = match Persistence::load(dev) {
                 Ok(Some(reloaded)) => match reloaded.get(&oid) {
                     Some(file) => reg.export(file, &rcap).as_deref() == Ok(original.as_ref()),
                     None => false,
                 },
                 _ => false,
-            }
+            };
+            restore_region(dev, 0, &saved);
+            result
         });
         check("feature 2: codec -> VFS -> persist -> reload -> export", ok, &mut report);
     }
@@ -1323,7 +1435,7 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
         let alice = KemIdentity::generate(b"metal-alice");
         let bob = KemIdentity::generate(b"metal-bob");
         let (mut a, ct) = Session::initiate(alice.id, bob.id, &bob.public, b"eph", 100).unwrap();
-        let b = Session::accept(&bob, alice.id, &ct, 100);
+        let mut b = Session::accept(&bob, alice.id, &ct, 100);
         let frame = a.seal(1, b"identity-bound secret").unwrap();
         let opened = b.open(1, &frame).as_deref() == Ok(b"identity-bound secret".as_ref());
         // Impersonation (Bob's id, attacker's key) is refused at handshake.
@@ -1605,15 +1717,18 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
     // ---- Phase P: compute-backed settlement & PoUW (PoI/PoL + ledger + tokenomics) ----
     {
         use dominion_core::hash::Hash256;
-        use dominion_core::settlement::{PoI, PoL, SettlementLedger, StakedLearning, StepRevelation, Treasury, Wallet};
+        use dominion_core::settlement::{PoI, PoL, SettlementLedger, StakedLearning, Treasury, Wallet};
         // Proof-of-Inference: grid-snap makes an honest re-run hash-match.
         let claim = PoI::claim(Hash256::of(b"model"), b"input", &[1.0, 2.0, 3.0]);
         let poi_ok = PoI::verify(&claim, Hash256::of(b"model"), b"input", &[1.0, 2.0, 3.0]);
-        // Proof-of-Learning: a fabricated step is slashed.
+        // Proof-of-Learning: the states are genuinely committed (so the Merkle
+        // membership binding passes), but [9] is not step([2]) = [4], so the
+        // fabricated transition is slashed.
         let step = |p: &[u8]| -> alloc::vec::Vec<u8> { p.iter().map(|&b| b.wrapping_mul(b)).collect() };
-        let claim2 = PoL::commit(&[alloc::vec![2u8], alloc::vec![9u8]], 500);
+        let states2 = [alloc::vec![2u8], alloc::vec![9u8]];
+        let claim2 = PoL::commit(&states2, 500);
         let mut staked = StakedLearning::accept(claim2);
-        let slashed = !staked.spot_check(&StepRevelation { k: 1, prev: alloc::vec![2u8], cur: alloc::vec![9u8] }, step)
+        let slashed = !staked.spot_check(&PoL::reveal(&states2, 1), step)
             && staked.forfeit() == 500;
         // Wallet + ledger: locked spend refused, unlocked spend recorded.
         let mut alice = Wallet::new(Hash256::of(b"a"), 100, b"pin");
@@ -1817,20 +1932,21 @@ pub fn run(phys_offset: u64, mut report: impl FnMut(&str, bool)) -> (u32, u32) {
     // ---- Phase H: identity, key hierarchy, passwordless auth, recovery ----
     {
         use dominion_core::crypto::CryptoLayer;
-        use dominion_core::identity::{login_challenge, Account, MasterSeed, Recovery};
+        use dominion_core::identity::{login_challenge, Account, AuthResponse, MasterSeed, Recovery};
         use dominion_core::recovery::split;
         let seed = MasterSeed::from_entropy(b"trng boundary");
         // DEKs rederive from the seed alone; per-service identities are unlinkable.
         let dek_stable = seed.dek("financial", "inv-1") == seed.dek("financial", "inv-1");
         let unlinkable = seed.service_identity("a").id != seed.service_identity("b").id;
-        // Passwordless login: a signed challenge verifies.
+        // Passwordless login: a Merkle-OTS revelation bundle verifies; the verifier
+        // stores only the public Merkle root, and a replayed bundle is rejected.
         let cal = CryptoLayer::with_defaults();
         let ident = seed.service_identity("app");
-        let account = Account::register(&cal, "lamport-pq", "app", &ident).unwrap();
+        let mut account = Account::register(&cal, "lamport-pq", "app", &ident).unwrap();
         let chal = login_challenge("app", b"nonce");
-        let sig = Account::sign_challenge(&cal, "lamport-pq", &ident, &chal).unwrap();
-        let login = account.verify_login(&cal, &chal, &sig)
-            && !account.verify_login(&cal, &login_challenge("app", b"other"), &sig);
+        let resp = AuthResponse::create(&cal, "lamport-pq", &ident, 0, &chal).unwrap();
+        let login = account.verify_login(&cal, &chal, &resp)   // honest login on leaf 0 succeeds
+            && !account.verify_login(&cal, &chal, &resp);       // replay of the spent leaf is rejected
         // Recovery: M-of-N quorum after a veto window, no escrow.
         let mut ent = [0u8; 32];
         if let Some(s) = crate::entropy::conditioned_seed() {

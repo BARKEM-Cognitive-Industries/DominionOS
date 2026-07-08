@@ -125,7 +125,7 @@ pub struct LoadedPage {
     pub doc: Document,
 }
 
-/// The native, content-addressed web: a name registry over an DominionLink store, so
+/// The native, content-addressed web: a name registry over a DominionLink store, so
 /// `dominion://home` resolves to verified content rather than a hardcoded string.
 pub struct NativeWeb {
     link: DominionLink,
@@ -840,7 +840,8 @@ fn validate_native_name(name: &str) -> Option<&str> {
     Some(name)
 }
 
-/// Minimal HTML-escaping for wrapping plain text in `<pre>`.
+/// Minimal HTML-escaping. Escapes quotes as well as angle brackets so values are
+/// safe both in text content and interpolated inside double-quoted attributes.
 fn escape_html(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -848,6 +849,8 @@ fn escape_html(s: &str) -> String {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
             _ => out.push(c),
         }
     }

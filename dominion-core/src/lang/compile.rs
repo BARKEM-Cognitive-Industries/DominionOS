@@ -1,4 +1,4 @@
-//! Aether compiler — lowers a parsed [`crate::lang::Program`] to bytecode.
+//! Dominion compiler — lowers a parsed [`crate::lang::Program`] to bytecode.
 //!
 //! OWNED BY: Compiler/VM/JIT agent (workstream C).
 //!

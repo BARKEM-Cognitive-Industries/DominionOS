@@ -128,6 +128,15 @@ pub fn log_is_usb() -> bool {
     LOG_USB.lock().is_some() || primary_is_usb()
 }
 
+/// Run `f` against the dedicated removable-USB mass-storage device as a concrete
+/// [`crate::xhci::UsbMsc`], so callers can reach the USB-only SCSI surface (INQUIRY, etc.)
+/// that the generic [`BlockDevice`] trait does not expose. Returns `None` when no dedicated
+/// USB device is present (re-probing the boot xHCI controller would corrupt it, so this
+/// only ever uses the handle already owned at boot). Used by the storage self-test.
+pub fn with_log_usb<R>(f: impl FnOnce(&mut crate::xhci::UsbMsc) -> R) -> Option<R> {
+    LOG_USB.lock().as_mut().map(f)
+}
+
 /// Run `f` against the preferred **log** device: a dedicated removable USB if one was
 /// found, otherwise the primary block device (which itself may be a USB, or an internal
 /// disk, or a RAM disk). This is what the bootlog persist path uses.

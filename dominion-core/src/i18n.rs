@@ -148,9 +148,14 @@ impl LocaleFormat {
             return self.format_integer(value);
         }
         let negative = value < 0;
-        let divisor = 10i64.pow(scale);
-        let int_part = value / divisor;
-        let frac = (value % divisor).unsigned_abs();
+        // `10^scale` overflows i64 for scale >= 19 (10^19 > i64::MAX), which panics in
+        // debug and silently wraps in release. Use checked_pow: when it overflows the
+        // divisor exceeds every representable magnitude, so the integer part is always 0
+        // and the whole value is fractional (zero-padded to `scale` digits below).
+        let (int_part, frac) = match 10i64.checked_pow(scale) {
+            Some(divisor) => (value / divisor, (value % divisor).unsigned_abs()),
+            None => (0, value.unsigned_abs()),
+        };
         // When the value is negative but the integer part rounds to zero (e.g. -0.50),
         // format_integer(0) produces "0" with no sign; prepend "-" explicitly.
         let mut s = if negative && int_part == 0 {

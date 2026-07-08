@@ -50,6 +50,10 @@ pub fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; 32] {
 
 /// HKDF-Expand (RFC 5869).
 pub fn hkdf_expand(prk: &[u8], info: &[u8], len: usize) -> Vec<u8> {
+    // RFC 5869 requires L <= 255*HashLen. Beyond that the single-byte T(n)
+    // counter below wraps 255 -> 0 and repeats, producing non-conformant,
+    // internally-inconsistent key material. Guard the invariant.
+    debug_assert!(len <= 255 * SHA256_LEN, "HKDF-Expand: len must be <= 255*HashLen");
     let mut out = Vec::with_capacity(len);
     let mut t: Vec<u8> = Vec::new();
     let mut counter: u8 = 1;
@@ -513,6 +517,23 @@ pub const X25519_BASE: [u8; 32] = [9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
 /// Derive the public key for a private scalar (`scalar · basepoint`).
 pub fn x25519_base(scalar: &[u8; 32]) -> [u8; 32] {
     x25519(scalar, &X25519_BASE)
+}
+
+/// X25519 with the RFC 7748 §6.1 low-order-point guard.
+///
+/// Computes `scalar · point` and returns `None` if the resulting shared secret
+/// is all zeros. A peer supplying a low-order public key (the canonical case is
+/// the all-zero point) can otherwise collapse the shared secret to a known
+/// constant, so callers performing key agreement MUST abort in that case rather
+/// than proceeding with an attacker-controlled secret. The zero check is
+/// constant-time (it never branches on individual secret bytes).
+pub fn x25519_checked(scalar: &[u8; 32], point: &[u8; 32]) -> Option<[u8; 32]> {
+    let out = x25519(scalar, point);
+    if ct_eq(&out, &[0u8; 32]) {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 // ============================================================================

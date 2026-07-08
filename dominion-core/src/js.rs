@@ -914,6 +914,16 @@ impl Value {
     }
 
     fn to_display(&self) -> String {
+        self.to_display_d(0)
+    }
+
+    // Depth-limited to avoid unbounded recursion (and a kernel stack overflow) on
+    // cyclic arrays, e.g. `var a=[]; a.push(a); console.log(a);`.
+    fn to_display_d(&self, depth: usize) -> String {
+        const MAX_DEPTH: usize = 128;
+        if depth >= MAX_DEPTH {
+            return "...".to_string();
+        }
         match self {
             Value::Undefined => "undefined".to_string(),
             Value::Null => "null".to_string(),
@@ -921,7 +931,7 @@ impl Value {
             Value::Num(n) => fmt_num(*n),
             Value::Str(s) => (**s).clone(),
             Value::Array(a) => {
-                let items: Vec<String> = a.borrow().iter().map(|v| v.to_display()).collect();
+                let items: Vec<String> = a.borrow().iter().map(|v| v.to_display_d(depth + 1)).collect();
                 items.join(",")
             }
             Value::Object(_) => "[object Object]".to_string(),
@@ -1372,23 +1382,65 @@ impl Js {
     }
 
     fn eval_update(&mut self, op: &str, prefix: bool, target: &Expr, env: &Env) -> EvalResult {
-        let old = self.eval(target, env)?.to_number();
-        let new = if op == "++" { old + 1.0 } else { old - 1.0 };
-        self.assign_to(target, Value::Num(new), env)?;
-        Ok(Value::Num(if prefix { new } else { old }))
+        // Evaluate the object/index sub-expressions once so side-effecting targets
+        // (e.g. `arr[f()]++`) don't run `f()` twice or address a different slot.
+        match target {
+            Expr::Member(obj, name) => {
+                let o = self.eval(obj, env)?;
+                let old = self.get_member(&o, name)?.to_number();
+                let new = if op == "++" { old + 1.0 } else { old - 1.0 };
+                self.set_member(&o, name, Value::Num(new))?;
+                Ok(Value::Num(if prefix { new } else { old }))
+            }
+            Expr::Index(obj, idx) => {
+                let o = self.eval(obj, env)?;
+                let i = self.eval(idx, env)?;
+                let old = self.get_index(&o, &i)?.to_number();
+                let new = if op == "++" { old + 1.0 } else { old - 1.0 };
+                self.set_index(&o, &i, Value::Num(new))?;
+                Ok(Value::Num(if prefix { new } else { old }))
+            }
+            _ => {
+                let old = self.eval(target, env)?.to_number();
+                let new = if op == "++" { old + 1.0 } else { old - 1.0 };
+                self.assign_to(target, Value::Num(new), env)?;
+                Ok(Value::Num(if prefix { new } else { old }))
+            }
+        }
     }
 
     fn eval_assign(&mut self, op: &str, target: &Expr, value: &Expr, env: &Env) -> EvalResult {
         let rhs = self.eval(value, env)?;
-        let final_val = if op == "=" {
-            rhs
-        } else {
-            let cur = self.eval(target, env)?;
-            let bop = &op[..1];
-            eval_binary(bop, cur, rhs)?
-        };
-        self.assign_to(target, final_val.clone(), env)?;
-        Ok(final_val)
+        if op == "=" {
+            self.assign_to(target, rhs.clone(), env)?;
+            return Ok(rhs);
+        }
+        let bop = &op[..1];
+        // Compound assignment: evaluate the object/index sub-expressions once so
+        // side-effecting targets (e.g. `obj[f()] += 1`) don't run `f()` twice.
+        match target {
+            Expr::Member(obj, name) => {
+                let o = self.eval(obj, env)?;
+                let cur = self.get_member(&o, name)?;
+                let final_val = eval_binary(bop, cur, rhs)?;
+                self.set_member(&o, name, final_val.clone())?;
+                Ok(final_val)
+            }
+            Expr::Index(obj, idx) => {
+                let o = self.eval(obj, env)?;
+                let i = self.eval(idx, env)?;
+                let cur = self.get_index(&o, &i)?;
+                let final_val = eval_binary(bop, cur, rhs)?;
+                self.set_index(&o, &i, final_val.clone())?;
+                Ok(final_val)
+            }
+            _ => {
+                let cur = self.eval(target, env)?;
+                let final_val = eval_binary(bop, cur, rhs)?;
+                self.assign_to(target, final_val.clone(), env)?;
+                Ok(final_val)
+            }
+        }
     }
 
     fn assign_to(&mut self, target: &Expr, val: Value, env: &Env) -> Result<(), String> {
@@ -1482,6 +1534,13 @@ impl Js {
                     let i = i as usize;
                     let mut v = a.borrow_mut();
                     if i >= v.len() {
+                        // Bound the index before resizing so an untrusted script
+                        // can't force a multi-GB allocation (or overflow `i + 1`
+                        // when the f64->usize cast saturates toward usize::MAX).
+                        const MAX_ARRAY_LEN: usize = 16 * 1024 * 1024;
+                        if i >= MAX_ARRAY_LEN {
+                            return Ok(());
+                        }
                         v.resize(i + 1, Value::Undefined);
                     }
                     v[i] = val;
@@ -2028,6 +2087,9 @@ fn string_method(s: &str, method: &str, args: &[Value]) -> EvalResult {
             let start = norm_index(arg(0), len, 0);
             let end = if args.len() > 1 { norm_index(arg(1), len, len) } else { len };
             let (a, b) = if method == "substring" && start > end { (end, start) } else { (start, end) };
+            // For "slice", start may exceed end (e.g. "hello".slice(3,1)); clamp the
+            // upper bound up to `a` so the range is never reversed (real JS returns "").
+            let b = b.max(a);
             Value::str(chars[a.max(0) as usize..b.clamp(0, len) as usize].iter().collect::<String>())
         }
         "split" => {
@@ -2047,7 +2109,13 @@ fn string_method(s: &str, method: &str, args: &[Value]) -> EvalResult {
         }
         "replace" => Value::str(s.replacen(&arg(0).to_display(), &arg(1).to_display(), 1)),
         "replaceAll" => Value::str(s.replace(&arg(0).to_display(), &arg(1).to_display())),
-        "repeat" => Value::str(s.repeat(arg(0).to_number().max(0.0) as usize)),
+        "repeat" => {
+            // Cap the count so an attacker-controlled number can't drive an
+            // unbounded allocation (f64 -> usize saturates toward usize::MAX).
+            const MAX_REPEAT: usize = 1 << 20;
+            let n = (arg(0).to_number().max(0.0) as usize).min(MAX_REPEAT);
+            Value::str(s.repeat(n))
+        }
         "trimStart" => Value::str(s.trim_start().to_string()),
         "trimEnd" => Value::str(s.trim_end().to_string()),
         "toString" => Value::str(s.to_string()),
@@ -2181,20 +2249,30 @@ fn powf(base: f64, exp: f64) -> f64 {
 }
 
 fn json_stringify(v: &Value) -> String {
+    json_stringify_d(v, 0)
+}
+
+// Depth-limited to avoid unbounded recursion (and a kernel stack overflow) on
+// cyclic structures, e.g. `var a=[]; a.push(a); JSON.stringify(a);`.
+fn json_stringify_d(v: &Value, depth: usize) -> String {
+    const MAX_DEPTH: usize = 128;
+    if depth >= MAX_DEPTH {
+        return "null".to_string();
+    }
     match v {
         Value::Undefined | Value::Null => "null".to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Num(n) => fmt_num(*n),
         Value::Str(s) => alloc::format!("\"{}\"", json_escape(s)),
         Value::Array(a) => {
-            let items: Vec<String> = a.borrow().iter().map(json_stringify).collect();
+            let items: Vec<String> = a.borrow().iter().map(|v| json_stringify_d(v, depth + 1)).collect();
             alloc::format!("[{}]", items.join(","))
         }
         Value::Object(map) => {
             let items: Vec<String> = map
                 .borrow()
                 .iter()
-                .map(|(k, v)| alloc::format!("\"{}\":{}", json_escape(k), json_stringify(v)))
+                .map(|(k, v)| alloc::format!("\"{}\":{}", json_escape(k), json_stringify_d(v, depth + 1)))
                 .collect();
             alloc::format!("{{{}}}", items.join(","))
         }

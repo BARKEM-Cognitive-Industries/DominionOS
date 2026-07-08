@@ -1,4 +1,4 @@
-//! The Aether abstract syntax tree.
+//! The Dominion abstract syntax tree.
 //!
 //! A program is a sequence of items: object/cell/function definitions and
 //! top-level statements (the latter make the language usable as a REPL inside

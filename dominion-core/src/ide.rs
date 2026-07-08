@@ -1,5 +1,5 @@
 //! The **IDE** — the node-graph programming surface (the dashboard's node graph,
-//! promoted). A program is an Dominion [`Program`](crate::lang::Program) AST kept in sync
+//! promoted). A program is a Dominion [`Program`](crate::lang::Program) AST kept in sync
 //! across **three views of the same tree**:
 //!
 //! * the **visual node graph** — one node per top-level item, wires from dataflow
@@ -368,17 +368,23 @@ impl Ide {
         matches!(self.edit, Edit::Program | Edit::Node(_)) || self.terminal_focused
     }
 
+    /// The pre-inset editor rect inside the code bar. Single source of truth shared by
+    /// [`Self::draw_code_bar`], [`Self::code_editor_area`] and [`Self::code_editor_view_h`]
+    /// so click-mapping and scroll clamping match exactly what is drawn (including the
+    /// shorter height when a parse-error banner occupies the bottom row).
+    fn code_editor_ed_rect(&self) -> Rect {
+        let bar = self.code_bar_rect();
+        let ed_h = if self.parse_error.is_some() { (bar.h - 50).max(0) } else { (bar.h - 32).max(0) };
+        Rect::new(bar.x + 8, bar.y + 28, (bar.w - 16).max(0), ed_h)
+    }
     /// The exact rect the program-source editor renders into (so a click can place the
     /// caret on the glyph under the pointer). Mirrors [`Self::draw_code_bar`].
     fn code_editor_area(&self) -> Rect {
-        let bar = self.code_bar_rect();
-        // Header row is 30px; 8px bottom padding = 38px total chrome.
-        let h = (bar.h - 38).max(0);
-        Rect::new(bar.x + 8, bar.y + 30, (bar.w - 16).max(0), h).inset(4)
+        self.code_editor_ed_rect().inset(4)
     }
     /// View height of the source editor inside the code bar (used for scroll clamping).
     fn code_editor_view_h(&self) -> i32 {
-        (self.code_bar_rect().h - 38).max(1)
+        self.code_editor_ed_rect().inset(4).h.max(1)
     }
     /// The exact rect the per-node editor renders into. Mirrors [`Self::draw_node_editor`].
     fn node_editor_area(&self) -> Rect {
@@ -1145,7 +1151,7 @@ impl Ide {
             Rect::new(8 + idx * 30, 6, 26, TOOLBAR_H - 12)
         } else {
             // Wider buttons for Examples and Help — use distinct widths.
-            let widths: [i32; 8] = [60, 60, 60, 60, 60, 80, 26, 0];
+            let widths: [i32; 8] = [60, 60, 60, 60, 60, 60, 80, 26];
             let w = widths.get((idx - 2) as usize).copied().unwrap_or(60);
             let x = if idx < 10 {
                 let mut acc = 8 + 2 * 30 + 220;
@@ -1163,6 +1169,11 @@ impl Ide {
     fn divider_x(&self) -> i32 {
         let cx = self.content_x();
         let cw = self.content_w();
+        // Too narrow to honour the 120px margins on both sides — the outer clamp bounds
+        // would invert (min > max) and panic, so centre the divider instead.
+        if cw < 240 {
+            return cx + cw / 2;
+        }
         let rel = (cw * self.split_frac / 100).clamp(120, (cw - 120).max(121));
         (cx + rel).clamp(cx + 120, cx + cw - 120)
     }
@@ -1375,8 +1386,7 @@ impl Ide {
                 size: 11,
             });
         }
-        let ed_h = if self.parse_error.is_some() { (bar.h - 50).max(0) } else { (bar.h - 32).max(0) };
-        let ed = Rect::new(bar.x + 8, bar.y + 28, (bar.w - 16).max(0), ed_h);
+        let ed = self.code_editor_ed_rect();
         s.push(DrawCmd::Rect { rect: ed, color: t.bg, radius: t.radius });
         if focused_prog {
             s.push(DrawCmd::Rect { rect: toolkit::inflate(ed, 1), color: t.primary, radius: t.radius });

@@ -388,21 +388,27 @@ fn parse_elf_ko(b: &[u8]) -> Result<ParsedImage, LoadError> {
         return Err(LoadError::BadImage);
     }
     // The section-header string table tells us each section's name.
-    let strtab_hdr = shoff + shstrndx * shentsize;
+    let strtab_hdr = shoff
+        .checked_add(shstrndx.checked_mul(shentsize).ok_or(LoadError::BadImage)?)
+        .ok_or(LoadError::BadImage)?;
     let strtab_off = rd_u64(b, strtab_hdr + 24).ok_or(LoadError::BadImage)? as usize;
     let strtab_size = rd_u64(b, strtab_hdr + 32).ok_or(LoadError::BadImage)? as usize;
-    let strtab = b.get(strtab_off..strtab_off + strtab_size).ok_or(LoadError::BadImage)?;
+    let strtab_end = strtab_off.checked_add(strtab_size).ok_or(LoadError::BadImage)?;
+    let strtab = b.get(strtab_off..strtab_end).ok_or(LoadError::BadImage)?;
 
     let mut kpi: Option<&[u8]> = None;
     let mut drv: Option<&[u8]> = None;
     for i in 0..shnum {
-        let h = shoff + i * shentsize;
+        let h = shoff
+            .checked_add(i.checked_mul(shentsize).ok_or(LoadError::BadImage)?)
+            .ok_or(LoadError::BadImage)?;
         let name_off = rd_u32(b, h).ok_or(LoadError::BadImage)? as usize;
         let name = cstr_at(strtab, name_off);
         let off = rd_u64(b, h + 24).ok_or(LoadError::BadImage)? as usize;
         let size = rd_u64(b, h + 32).ok_or(LoadError::BadImage)? as usize;
         if name == ".kpi" || name == ".drv" {
-            let data = b.get(off..off + size).ok_or(LoadError::BadImage)?;
+            let end = off.checked_add(size).ok_or(LoadError::BadImage)?;
+            let data = b.get(off..end).ok_or(LoadError::BadImage)?;
             if name == ".kpi" {
                 kpi = Some(data);
             } else {

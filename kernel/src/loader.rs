@@ -64,7 +64,7 @@ impl Loaded {
 
     /// **W^X-safe** entry: remap the image buffer as read+execute, then call it.
     ///
-    /// This is the correct way to run a loaded ELF image on AetherOS.  It uses
+    /// This is the correct way to run a loaded ELF image on DominionOS.  It uses
     /// `memory::seal_as_rx` to strip the `WRITABLE` and `NO_EXECUTE` bits from
     /// every page backing `self.image` before the first instruction fetch,
     /// satisfying the W^X invariant: the pages are no longer writable when they
@@ -112,9 +112,20 @@ pub fn load(bytes: &[u8]) -> Result<Loaded, ElfError> {
         // Any mem_size beyond file_size (.bss) stays zero — already so.
     }
 
+    // Validate the entry point lies inside the loaded image before computing its
+    // offset. `elf::parse` bounds-checks every segment but not `e_entry`, so a
+    // crafted image with `entry < base` (underflow) or `entry >= base + span`
+    // (out-of-buffer) would otherwise yield a wild entry pointer that
+    // `seal_and_call`/`call_entry` jumps to — control-flow hijack / UB.
+    let entry_off = img
+        .entry
+        .checked_sub(base)
+        .filter(|&off| (off as usize) < span)
+        .ok_or(ElfError::BadProgramHeaders)? as usize;
+
     Ok(Loaded {
         image,
-        entry_off: (img.entry - base) as usize,
+        entry_off,
         seg_count: img.segments.len(),
     })
 }

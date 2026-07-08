@@ -78,7 +78,7 @@ impl Shell {
         vga_buffer::clear_screen();
         vga_buffer::set_color(vga_buffer::Color::LightCyan, vga_buffer::Color::Black);
         tprintln!("===============================================================");
-        tprintln!("  DominionOS  -  DominionOS  -  SAFE MODE TERMINAL (ASH)");
+        tprintln!("  DominionOS  -  SAFE MODE TERMINAL (ASH)");
         tprintln!("  capability-secured . single-address-space . deterministic");
         tprintln!("===============================================================");
         vga_buffer::set_color(vga_buffer::Color::LightGray, vga_buffer::Color::Black);
@@ -202,6 +202,8 @@ impl Shell {
         tprintln!("  echo <text>     print text");
         tprintln!("  mem             heap and physical-frame statistics");
         tprintln!("  ticks           timer interrupts since boot (liveness)");
+        tprintln!("  hw / hwinfo     detect CPU, memory, and PCI devices");
+        tprintln!("  log / bootlog   show the captured boot log");
         tprintln!("  hash <text>     SHA-256 content address of text");
         tprintln!("  caps            demonstrate capability minting + faults");
         tprintln!("  obj             drive the semantic object graph");
@@ -212,7 +214,7 @@ impl Shell {
         tprintln!("  ps              run isolated domains under the cooperative scheduler");
         tprintln!("  net             virtio-net: show MAC + ARP the gateway");
         tprintln!("  link            DominionLink: content-addressed identity networking");
-        tprintln!("  web             render an Dominion-native semantic web page");
+        tprintln!("  web             render a Dominion-native semantic web page");
         tprintln!("  gui             composite surfaces onto the framebuffer (M4)");
         tprintln!("  sandbox         contain a legacy guest (capabilities + syscalls)");
         tprintln!("  rng             hardware TRNG (RDRAND) + seeded deterministic RNG");
@@ -231,7 +233,7 @@ impl Shell {
     }
 
     fn cmd_about(&self) {
-        tprintln!("DominionOS / DominionOS - functional prototype");
+        tprintln!("DominionOS - functional prototype");
         tprintln!("  kernel        : freestanding x86_64, single address space");
         tprintln!("  security      : capability tokens (CHERI-modelled in software)");
         tprintln!("  storage       : content-addressed immutable semantic graph");

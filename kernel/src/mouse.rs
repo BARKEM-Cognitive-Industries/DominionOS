@@ -193,22 +193,34 @@ pub fn add_byte(byte: u8) {
 /// assembler does, so the desktop sees the same `Pointer` either way. Marks the mouse
 /// present so the desktop knows a pointer exists.
 pub fn apply_hid(dx: i32, dy: i32, left: bool, right: bool) {
-    let mut m = MOUSE.lock();
-    m.present = true;
-    let (mx, my) = (m.max_x, m.max_y);
-    m.x = (m.x + dx).clamp(0, mx);
-    m.y = (m.y + dy).clamp(0, my); // dy already screen-oriented (down = positive) by caller
-    m.left = left;
-    m.right = right;
-    m.seq = m.seq.wrapping_add(1);
+    use x86_64::instructions::interrupts;
+    // MOUSE is shared with the IRQ12 handler (add_byte). Hold the lock with
+    // interrupts masked so IRQ12 cannot fire on this core and spin forever on a
+    // lock this code still holds — a single-core self-deadlock.
+    interrupts::without_interrupts(|| {
+        let mut m = MOUSE.lock();
+        m.present = true;
+        let (mx, my) = (m.max_x, m.max_y);
+        m.x = (m.x + dx).clamp(0, mx);
+        m.y = (m.y + dy).clamp(0, my); // dy already screen-oriented (down = positive) by caller
+        m.left = left;
+        m.right = right;
+        m.seq = m.seq.wrapping_add(1);
+    });
 }
 
 /// Poll the current pointer state.
 pub fn poll() -> Pointer {
-    let m = MOUSE.lock();
-    Pointer { x: m.x, y: m.y, left: m.left, right: m.right, seq: m.seq }
+    use x86_64::instructions::interrupts;
+    // See apply_hid: mask IRQ12 while holding the MOUSE lock to avoid a deadlock
+    // with the interrupt handler.
+    interrupts::without_interrupts(|| {
+        let m = MOUSE.lock();
+        Pointer { x: m.x, y: m.y, left: m.left, right: m.right, seq: m.seq }
+    })
 }
 
 pub fn present() -> bool {
-    MOUSE.lock().present
+    use x86_64::instructions::interrupts;
+    interrupts::without_interrupts(|| MOUSE.lock().present)
 }

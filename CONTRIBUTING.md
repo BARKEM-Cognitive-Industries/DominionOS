@@ -1,4 +1,4 @@
-# Contributing to AetherOS
+# Contributing to DominionOS
 
 We welcome contributions. This guide explains how we work and what we expect.
 
@@ -78,8 +78,8 @@ If it boots and runs, it's ready for review.
 ### 2. Fork, Branch, and Code
 
 ```bash
-git clone https://github.com/yourusername/aetheros.git
-cd aetheros
+git clone https://github.com/yourusername/dominionos.git
+cd dominionos
 git checkout -b feature/my-feature
 ```
 
@@ -172,7 +172,7 @@ No single person owns a subsystem, but here's who knows what well (as of June 20
 | Desktop/Shell | @barkem | Partial, needs wiring |
 | Networking/NDN | @barkem | Stable |
 | Dominion language | @barkem | Functional |
-| Device drivers | @barkem | Partial (virtio working) |
+| Device drivers | @barkem | Working (virtio, AHCI, NVMe, USB, e1000/RTL8139; QEMU-tested) |
 
 **Contributing to an area?** Consider reaching out to the expert first. They can point you to gotchas and prioritize your work.
 
@@ -249,6 +249,6 @@ We value your work. Thanks for being here.
 
 ---
 
-**Thanks for contributing to AetherOS.**
+**Thanks for contributing to DominionOS.**
 
 Questions? contact@cognitive-industries.org

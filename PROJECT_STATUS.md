@@ -1,15 +1,14 @@
-# AetherOS Project Status (June 2026)
+# DominionOS Project Status (June 2026)
 
 **Version:** 1.0-preview  
 **Status:** Developer Research Preview  
-**Effort:** ~4 days of core development  
 **Maturity:** Prototype (backend functional, frontend sparse)
 
 ---
 
 ## Executive Summary
 
-We've built a working capability-based OS from scratch in about 4 days. The backend is solid—capability security, storage, crypto, rendering, networking all function. The frontend (shell, desktop apps, hardware support) is incomplete but functional for demo purposes.
+We've built a working capability-based OS from scratch as a research prototype. The backend is solid—capability security, storage, crypto, rendering, networking all function. The frontend (shell, desktop apps, hardware support) is incomplete but functional for demo purposes.
 
 **This is a research OS.** It proves concepts work. It's not production-ready, and it won't behave like Windows or Linux. Use in QEMU or on expendable hardware only.
 
@@ -31,11 +30,11 @@ We've built a working capability-based OS from scratch in about 4 days. The back
 - Desktop environment with 9 apps
 - Window manager, taskbar, shell
 - Basic terminal and file browser
-- **Gaps:** Terminal input incomplete, shell fragmented, GUI wiring sparse
-- **Still works:** Boots, launches apps, can navigate
+- **Gaps:** Shell implementations need consolidation, GUI wiring sparse in places
+- **Still works:** Boots, launches apps, interactive terminal, can navigate
 
 ### 🔄 Infrastructure (Designed, not deployed)
-- AetherLink network (code exists)
+- DominionLink network (code exists)
 - Package repository (code exists)
 - Compute pool framework (code exists)
 - **Needed:** Public nodes, deployment, operational setup
@@ -72,13 +71,12 @@ We've built a working capability-based OS from scratch in about 4 days. The back
 ## Known Critical Gaps
 
 ### Must-Fix Before "Production" (theoretical)
-1. **Formal verification** — Firewall/airlock proofs missing
+1. **Formal verification** — Firewall/airlock/kernel proofs missing
 2. **Measured boot** — No TPM integration (trust chain incomplete)
-3. **Terminal input routing** — Shell appears frozen (small fix needed)
-4. **Distributed firewall** — Single-node only (phase 2)
+3. **Distributed firewall** — Single-node only (phase 2)
 
 ### Should-Fix Before "Stable" (Phase 1.1)
-1. **Real hardware drivers** — NVMe, real NICs, USB HID
+1. **On-real-hardware validation** — Storage (AHCI/NVMe/USB) and NIC (e1000/RTL8139) drivers are implemented and tested in QEMU; broad bare-metal testing is still thin
 2. **Multi-user support** — Currently single-user only
 3. **Preemptive scheduling** — Cooperative only (no hard real-time)
 4. **System resilience** — Recovery, restart, crash handling
@@ -86,7 +84,7 @@ We've built a working capability-based OS from scratch in about 4 days. The back
 ### Can-Defer to Later Phases
 1. **GPU acceleration** — Software rendering works
 2. **Wireless support** — WiFi/Bluetooth deferred
-3. **POSIX compatibility** — Aether language sufficient for now
+3. **POSIX compatibility** — Dominion language sufficient for now
 4. **Performance tuning** — Good enough for demo
 
 ---
@@ -124,7 +122,7 @@ We've built a working capability-based OS from scratch in about 4 days. The back
 
 ### Weak Points
 - ⚠️ No formal verification (proofs missing)
-- ⚠️ Microkernel not minimized (100KB, not 12KB)
+- ⚠️ Microkernel not minimized (drivers and services still run in-kernel)
 - ⚠️ No measured boot (trust starts at kernel, not firmware)
 - ⚠️ Drivers in kernel (not sandboxed)
 - ⚠️ Unaudited for side-channel attacks
@@ -137,15 +135,14 @@ We've built a working capability-based OS from scratch in about 4 days. The back
 ## Development Roadmap
 
 ### Immediate (Week 1-2) — Release Fixes
-- [ ] Wire terminal input routing (1-2 days)
 - [ ] Document all hardware limitations
 - [ ] Deploy baseline benchmarks
 - [ ] Create contributor onboarding
 
 ### Short-term (Month 1) — Phase 1.1
-- [ ] Real hardware drivers (NVMe, Intel NIC)
+- [ ] Bare-metal validation of existing drivers (AHCI/NVMe/USB storage, e1000/RTL8139 NICs)
 - [ ] Formal verification roadmap finalized
-- [ ] Public AetherLink bootstrap nodes deployed
+- [ ] Public DominionLink bootstrap nodes deployed
 - [ ] Package repository deployed
 
 ### Medium-term (Months 2-3) — Phase 2
@@ -164,8 +161,7 @@ We've built a working capability-based OS from scratch in about 4 days. The back
 
 ## Team & Effort
 
-**Core development:** 1 person-equivalent, ~4 days  
-**Spec consolidation:** 1 person-equivalent, ~1 day  
+**Core development:** Built as an early-stage research prototype by a small team  
 **Infrastructure planning:** Scoped, not yet executed  
 **Current velocity:** Sparse (depends on interest & prioritization)
 
@@ -180,8 +176,7 @@ We've built a working capability-based OS from scratch in about 4 days. The back
 5. **Get merged** 🎉
 
 **Estimated effort for common fixes:**
-- Terminal input routing: 1-2 days
-- Add real hardware driver: 3-5 days
+- Add a new hardware driver: 3-5 days
 - Implement formal proof: 2-4 weeks
 - Add multi-user support: 2-3 weeks
 
@@ -191,8 +186,8 @@ We've built a working capability-based OS from scratch in about 4 days. The back
 
 ### In 3 Months
 - 5-10 active contributors
-- Terminal fully interactive
-- Real hardware drivers (3-5)
+- Broader command set in the shell
+- Bare-metal validation of existing drivers
 - Bootstrap network operational
 - 500+ GitHub stars
 

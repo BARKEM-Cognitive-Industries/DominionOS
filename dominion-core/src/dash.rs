@@ -263,8 +263,11 @@ impl Dash {
         let status = Rect::new(0, h - STATUS_H, w, STATUS_H);
         let body_y = TITLE_H;
         let body_h = h - TITLE_H - STATUS_H;
-        let lw = if self.left_collapsed { COLLAPSED_W } else { self.left_w.clamp(160, w / 2) };
-        let rw = if self.right_collapsed { COLLAPSED_W } else { self.right_w.clamp(180, w / 2) };
+        // `.max(lower)` keeps the clamp upper bound >= the lower bound: i32::clamp
+        // panics if min > max, which happens for a narrow framebuffer (w/2 below
+        // the 160/180 minimums).
+        let lw = if self.left_collapsed { COLLAPSED_W } else { self.left_w.clamp(160, (w / 2).max(160)) };
+        let rw = if self.right_collapsed { COLLAPSED_W } else { self.right_w.clamp(180, (w / 2).max(180)) };
         let left = Rect::new(0, body_y, lw, body_h);
         let right = Rect::new(w - rw, body_y, rw, body_h);
         let center = Rect::new(lw, body_y, (w - lw - rw).max(0), body_h);
@@ -437,8 +440,8 @@ impl Dash {
             }
             Drag::Resize(side) => {
                 match side {
-                    Side::Left => self.left_w = px.clamp(160, self.w / 2),
-                    Side::Right => self.right_w = (self.w - px).clamp(180, self.w / 2),
+                    Side::Left => self.left_w = px.clamp(160, (self.w / 2).max(160)),
+                    Side::Right => self.right_w = (self.w - px).clamp(180, (self.w / 2).max(180)),
                 }
                 self.dmg_all();
             }

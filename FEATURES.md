@@ -1,4 +1,4 @@
-# AetherOS Features & Roadmap
+# DominionOS Features & Roadmap
 
 Quick reference for what's implemented, what's partial, and what's planned.
 
@@ -47,12 +47,12 @@ Quick reference for what's implemented, what's partial, and what's planned.
 - ✅ ARP (address resolution)
 - ✅ ICMP (ping)
 - ✅ UDP datagram transport
-- ✅ DNS bridge (AetherLink names ↔ DNS)
+- ✅ DNS bridge (DominionLink names ↔ DNS)
 - ✅ Hybrid Logical Clocks (HLC) for causal ordering
 - ✅ PQ-signed session keys
 
 ### Language & Runtime
-- ✅ Aether language (lexer, parser, interpreter)
+- ✅ Dominion language (lexer, parser, interpreter)
 - ✅ Object-centric data model
 - ✅ Capability-gated cells
 - ✅ Parallel execution (@CPU/@GPU/@NPU decorators)
@@ -98,19 +98,24 @@ Quick reference for what's implemented, what's partial, and what's planned.
 - ✅ JavaScript interpreter (no classes/async/regex)
 - ✅ DOM operations (createElement, appendChild, innerHTML)
 - ✅ Event binding and propagation
-- ✅ Content-addressed AetherWeb pages
+- ✅ Content-addressed DominionWeb pages
 - ✅ Tor integration with bootstrap gating
 - ✅ HTTPS/TLS (basic)
 
 ### Devices & Drivers
 - ✅ PCI bus enumeration
+- ✅ ACPI (tables, SMP topology)
+- ✅ SMP multi-core bring-up
+- ✅ RTC and serial
 - ✅ Driver synthesis from declarative specs
 - ✅ MMIO capability bounding (drivers can't escape device window)
 - ✅ virtio-pci transport
-- ✅ virtio-blk (block device driver)
-- ✅ virtio-net (network driver)
-- ✅ PS/2 keyboard
-- ✅ PS/2 mouse
+- ✅ Storage: virtio-blk, AHCI (SATA), NVMe (PCIe), USB Mass Storage (BOT + SCSI over xHCI)
+- ✅ Network: virtio-net, Intel e1000/e1000e (82540EM/82574L/I217/I211), RTL8139 (shared NIC abstraction)
+- ✅ USB: xHCI host controller + USB HID (keyboard/mouse) + USB mass storage
+- ✅ Input: PS/2 keyboard + mouse (direct i8042 polling) and USB HID keyboard + mouse
+
+*Drivers are implemented and tested primarily in QEMU; bare-metal validation is still thin.*
 
 ### System Services
 - ✅ Task management (process scheduling)
@@ -135,20 +140,19 @@ Quick reference for what's implemented, what's partial, and what's planned.
 ## ⚠️ Partially Implemented
 
 ### Frontend / UX
-- ⚠️ **Terminal input routing** - Output works; input buffering incomplete
 - ⚠️ **Shell architecture** - Multiple shell implementations need consolidation
 - ⚠️ **Composable UI** - Implemented on Desktop; not extended to all pages
 - ⚠️ **Browser integration** - Renders HTML/JS but some features incomplete
 - ⚠️ **IDE features** - LSP works; debugging incomplete
 
 ### Hardware Support
-- ⚠️ **Storage drivers** - virtio works; NVMe, SATA need implementation
-- ⚠️ **Network drivers** - virtio works; real NICs need drivers (Broadcom experimental)
-- ⚠️ **Input devices** - PS/2 works; USB HID not implemented
+- ⚠️ **Storage drivers** - virtio-blk, AHCI, NVMe, and USB Mass Storage implemented; tested primarily in QEMU
+- ⚠️ **Network drivers** - virtio-net, Intel e1000/e1000e, and RTL8139 implemented; tested primarily in QEMU
+- ⚠️ **Input devices** - PS/2 and USB HID keyboard/mouse implemented; USB validated mostly in QEMU
 - ⚠️ **Graphics** - Software framebuffer only; no GPU acceleration
 
 ### Networking & Distribution
-- ⚠️ **AetherLink network** - Protocol implemented; public bootstrap nodes not deployed
+- ⚠️ **DominionLink network** - Protocol implemented; public bootstrap nodes not deployed
 - ⚠️ **Package repository** - Versioning works; central repo not deployed
 - ⚠️ **Compute pool** - Framework done; coordinator not deployed
 - ⚠️ **Multi-node firewall** - Single-node only; distributed validation deferred
@@ -169,8 +173,6 @@ Quick reference for what's implemented, what's partial, and what's planned.
 ## ❌ Not Yet Implemented
 
 ### Hardware
-- ❌ **NVMe drivers** (PCIe storage)
-- ❌ **USB support** (devices, HID, mass storage)
 - ❌ **WiFi drivers** (802.11)
 - ❌ **Bluetooth**
 - ❌ **Audio drivers** (specified but not coded)
@@ -179,7 +181,7 @@ Quick reference for what's implemented, what's partial, and what's planned.
 - ❌ **Trackpad support** (PS/2 mice work; trackpads don't)
 
 ### Advanced Networking
-- ❌ **Public AetherLink bootstrap nodes** (needs deployment)
+- ❌ **Public DominionLink bootstrap nodes** (needs deployment)
 - ❌ **Public package repository** (needs deployment)
 - ❌ **Compute pool coordinator** (needs deployment)
 - ❌ **Worker node registration** (needs web UI)
@@ -206,8 +208,8 @@ Quick reference for what's implemented, what's partial, and what's planned.
 - ❌ **Incremental backups** (full backups work)
 
 ### Language & Runtime
-- ❌ **Classes in Aether** (objects exist; class syntax not in interpreter)
-- ❌ **Async/await in Aether**
+- ❌ **Classes in Dominion** (objects exist; class syntax not in interpreter)
+- ❌ **Async/await in Dominion**
 - ❌ **Regular expressions**
 - ❌ **Module system** (packages exist; imports incomplete)
 - ❌ **Exceptions** (panics handled; exception model not designed)
@@ -230,7 +232,7 @@ Quick reference for what's implemented, what's partial, and what's planned.
 - ✅ Security model enforced
 - ✅ Single-user demo
 - ✅ ML inference working
-- 🔄 Terminal input wiring (in progress)
+- ✅ Interactive terminal (ASH shell + GUI desktop terminal)
 - 🔄 Hardware detection (in progress)
 
 ### Phase 2 (1.1 - 1.5) — Q3-Q4 2026
@@ -238,10 +240,10 @@ Quick reference for what's implemented, what's partial, and what's planned.
 - 🔄 Formal verification proofs
 - 🔄 Measured boot chain (TPM)
 - 🔄 Distributed firewall (multi-node)
-- 🔄 Public AetherLink network deployment
+- 🔄 Public DominionLink network deployment
 - 🔄 Package repository deployment
 - 🔄 RL-based storage optimization
-- 🔄 Real hardware drivers (Intel NICs, storage)
+- 🔄 Bare-metal validation of existing drivers (NICs, storage, USB)
 
 ### Phase 3 (2.0) — 2027
 **Focus:** Scale and ecosystem
@@ -264,9 +266,9 @@ Quick reference for what's implemented, what's partial, and what's planned.
 
 ---
 
-## Feature Matrix: AetherOS vs Linux vs Windows
+## Feature Matrix: DominionOS vs Linux vs Windows
 
-| Feature | AetherOS | Linux | Windows 11 |
+| Feature | DominionOS | Linux | Windows 11 |
 |---------|----------|-------|-----------|
 | **Boot time** | measured (see bench) | ~5-10s | ~15-30s |
 | **Memory usage (idle)** | minimal (kernel-only) | ~200-300MB | ~500MB+ |
@@ -288,12 +290,12 @@ Quick reference for what's implemented, what's partial, and what's planned.
 ## Known Limitations
 
 1. **Single-user only** — Multi-user support deferred to Phase 3
-2. **Limited hardware** — virtio and PS/2 only (real drivers coming)
+2. **Hardware tested mostly in QEMU** — Storage/NIC/USB drivers implemented; bare-metal validation still thin
 3. **No preemption** — Cooperative scheduling (hard real-time coming Phase 2)
-4. **No POSIX** — Aether language only (POSIX layer Phase 2)
+4. **No POSIX** — Dominion language only (POSIX layer Phase 2)
 5. **No container/VM** — Single namespace (containers Phase 3)
 6. **Software rendering only** — No GPU acceleration (Phase 3+)
-7. **4 days of work** — This is a prototype. Expect gaps.
+7. **Early-stage prototype** — Expect gaps.
 
 ---
 

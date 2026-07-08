@@ -103,32 +103,36 @@ impl HardenedAllocator {
     }
 
     /// The seed-derived base offset of a size class's band (per-exec randomization).
-    fn base_of(&mut self, class: usize) -> usize {
+    fn base_of(&mut self, class: usize) -> Result<usize, AllocFault> {
         if let Some(b) = self.class_base.get(&class) {
-            return *b;
+            return Ok(*b);
         }
         // Derive a deterministic-but-seed-dependent slot index for this class.
         let mut h = Hash256::of(&[&self.seed.to_le_bytes()[..], &class.to_le_bytes()[..]].concat());
         let slots = (self.arena.len() / self.band).max(1);
         let pick = (u64::from_le_bytes(h.0[..8].try_into().unwrap()) as usize) % slots;
         let base = pick * self.band;
-        // Avoid two classes colliding on the same band (linear probe).
+        // Avoid two classes colliding on the same band (linear probe). If every band is
+        // already taken, refuse rather than aliasing two classes onto the same bytes.
         let mut base = base;
         let taken: Vec<usize> = self.class_base.values().copied().collect();
         let mut guard = 0;
-        while taken.contains(&base) && guard < slots {
+        while taken.contains(&base) {
+            if guard >= slots {
+                return Err(AllocFault::OutOfMemory);
+            }
             base = (base + self.band) % (slots * self.band);
             guard += 1;
         }
         self.class_base.insert(class, base);
         let _ = &mut h;
-        base
+        Ok(base)
     }
 
     /// Allocate `size` bytes, zeroed, bracketed by canaries within its size-class band.
     pub fn alloc(&mut self, size: usize) -> Result<Handle, AllocFault> {
         let class = Self::size_class(size);
-        let base = self.base_of(class);
+        let base = self.base_of(class)?;
         let stride = class + 2 * GUARD;
         let used = *self.class_cursor.get(&class).unwrap_or(&0);
         let start = base + used;
@@ -166,7 +170,7 @@ impl HardenedAllocator {
     /// Write `data` at `offset` within the allocation, bounds- and canary-checked.
     pub fn write(&mut self, h: Handle, offset: usize, data: &[u8]) -> Result<(), AllocFault> {
         let m = self.resolve(h)?;
-        if offset + data.len() > m.size {
+        if offset.checked_add(data.len()).map_or(true, |e| e > m.size) {
             return Err(AllocFault::OutOfBounds);
         }
         self.check_canaries(h)?;
@@ -177,7 +181,7 @@ impl HardenedAllocator {
     /// Read `len` bytes at `offset` within the allocation.
     pub fn read(&self, h: Handle, offset: usize, len: usize) -> Result<Vec<u8>, AllocFault> {
         let m = self.resolve(h)?;
-        if offset + len > m.size {
+        if offset.checked_add(len).map_or(true, |e| e > m.size) {
             return Err(AllocFault::OutOfBounds);
         }
         Ok(self.arena[m.offset + offset..m.offset + offset + len].to_vec())
@@ -220,7 +224,7 @@ impl HardenedAllocator {
     }
 
     /// Two size classes never share a band (isolation) — exposed for testing the layout.
-    pub fn class_base_for(&mut self, size: usize) -> usize {
+    pub fn class_base_for(&mut self, size: usize) -> Result<usize, AllocFault> {
         let class = Self::size_class(size);
         self.base_of(class)
     }
@@ -277,8 +281,8 @@ mod tests {
     #[test]
     fn size_classes_live_in_isolated_bands() {
         let mut a = HardenedAllocator::new(1 << 16, 0xF00D);
-        let small = a.class_base_for(16);
-        let large = a.class_base_for(4096);
+        let small = a.class_base_for(16).unwrap();
+        let large = a.class_base_for(4096).unwrap();
         assert_ne!(small, large); // different classes never share a band
     }
 
@@ -286,7 +290,7 @@ mod tests {
     fn layout_is_seed_randomized_across_boots() {
         // The same seed is deterministic; across many seeds the base is not constant
         // (per-exec randomization) — robust to the occasional band collision.
-        let base = |seed: u64| HardenedAllocator::new(1 << 16, seed).class_base_for(64);
+        let base = |seed: u64| HardenedAllocator::new(1 << 16, seed).class_base_for(64).unwrap();
         assert_eq!(base(7), base(7)); // deterministic per boot
         let distinct = (0u64..16).map(base).collect::<alloc::collections::BTreeSet<_>>();
         assert!(distinct.len() > 1, "layout must vary with the seed");

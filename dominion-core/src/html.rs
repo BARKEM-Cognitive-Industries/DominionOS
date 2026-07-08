@@ -114,7 +114,7 @@ impl Document {
         let mut flow = Flow::new(&self.sheet, width, base);
         let root = self.render_root();
         let root_style = Computed::root(base);
-        flow.walk_children(&root, &root_style, None, false);
+        flow.walk_children(&root, &root_style, None, false, 0);
         flow.finish()
     }
 }
@@ -124,6 +124,10 @@ impl Document {
 const PAD_TOP: i32 = 12;
 const PAD_LEFT: i32 = 16;
 const LINE_GAP: i32 = 6;
+/// Hard cap on DOM nesting depth we recurse into during layout. Untrusted HTML
+/// can nest elements arbitrarily deep; on a bare-metal kernel with a small,
+/// guard-page-less stack this would overflow. Past this depth we stop descending.
+const MAX_LAYOUT_DEPTH: usize = 256;
 
 #[derive(Clone)]
 struct Glyph {
@@ -271,7 +275,7 @@ impl<'a> Flow<'a> {
     }
 
     /// Walk an element's children, laying out inline content and recursing into blocks.
-    fn walk_children(&mut self, parent: &NodeRef, parent_style: &Computed, link: Option<&str>, pre: bool) {
+    fn walk_children(&mut self, parent: &NodeRef, parent_style: &Computed, link: Option<&str>, pre: bool, nest_depth: usize) {
         let children: Vec<NodeRef> = match parent.borrow().as_element() {
             Some(e) => e.children.clone(),
             None => return,
@@ -282,13 +286,19 @@ impl<'a> Flow<'a> {
                     self.add_text(t, parent_style, link, parent, pre);
                 }
                 Node::Element(_) => {
-                    self.layout_element(child, parent_style, link, pre);
+                    self.layout_element(child, parent_style, link, pre, nest_depth);
                 }
             }
         }
     }
 
-    fn layout_element(&mut self, el: &NodeRef, parent_style: &Computed, link: Option<&str>, pre: bool) {
+    fn layout_element(&mut self, el: &NodeRef, parent_style: &Computed, link: Option<&str>, pre: bool, nest_depth: usize) {
+        // Bound layout recursion: untrusted HTML can nest arbitrarily deep, which
+        // would overflow the kernel stack. Past the cap we stop descending.
+        if nest_depth >= MAX_LAYOUT_DEPTH {
+            return;
+        }
+        let nest_depth = nest_depth + 1;
         let style = self.sheet.computed(el, parent_style);
         if style.display == Display::None {
             return;
@@ -325,7 +335,7 @@ impl<'a> Flow<'a> {
 
         if !block {
             // Inline element: keep flowing in the current line.
-            self.walk_children(el, &style, child_link.as_deref(), child_pre);
+            self.walk_children(el, &style, child_link.as_deref(), child_pre, nest_depth);
             return;
         }
 
@@ -335,7 +345,7 @@ impl<'a> Flow<'a> {
 
         if tag == "ul" || tag == "ol" {
             self.lists.push((tag == "ol", 1));
-            self.walk_children(el, &style, child_link.as_deref(), child_pre);
+            self.walk_children(el, &style, child_link.as_deref(), child_pre, nest_depth);
             self.lists.pop();
             self.y += style.margin_bottom;
             return;
@@ -373,7 +383,7 @@ impl<'a> Flow<'a> {
             self.line_start_glyph = self.lay.glyphs.len();
             self.line_align = style.align;
             self.cur_size = self.base;
-            self.walk_children(el, &style, child_link.as_deref(), child_pre);
+            self.walk_children(el, &style, child_link.as_deref(), child_pre, nest_depth);
             self.break_line();
             self.y += style.margin_bottom;
             return;
@@ -385,7 +395,7 @@ impl<'a> Flow<'a> {
         self.line_used = false;
         self.line_start_glyph = self.lay.glyphs.len();
         self.line_align = style.align;
-        self.walk_children(el, &style, child_link.as_deref(), child_pre);
+        self.walk_children(el, &style, child_link.as_deref(), child_pre, nest_depth);
         self.break_line();
 
         // Background band for the block, if any.

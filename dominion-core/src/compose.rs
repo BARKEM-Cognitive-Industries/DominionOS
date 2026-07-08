@@ -487,7 +487,7 @@ impl Board {
     /// upload to / download from the library. Compact, self-describing, versioned.
     pub fn upload(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        out.extend_from_slice(b"AWB1"); // magic + version
+        out.extend_from_slice(b"AWB2"); // magic + version (AWB2 carries bound content + data)
         put_u16(&mut out, self.panels.len() as u16);
         for p in &self.panels {
             out.push(p.kind.to_u8());
@@ -499,6 +499,21 @@ impl Board {
             put_u16(&mut out, tb.len() as u16);
             out.extend_from_slice(tb);
             out.push(p.removable as u8);
+            // Bound content: presence byte, then length-prefixed UTF-8 when set.
+            match &p.content {
+                Some(s) => {
+                    out.push(1);
+                    let cb = s.as_bytes();
+                    put_u16(&mut out, cb.len() as u16);
+                    out.extend_from_slice(cb);
+                }
+                None => out.push(0),
+            }
+            // Live data: count-prefixed big-endian i64s.
+            put_u16(&mut out, p.data.len() as u16);
+            for &d in &p.data {
+                out.extend_from_slice(&d.to_be_bytes());
+            }
         }
         out
     }
@@ -513,7 +528,7 @@ impl Board {
     /// on a malformed/foreign pack.
     pub fn download(bytes: &[u8]) -> Option<Board> {
         let mut c = Cursor::new(bytes);
-        if c.take(4)? != b"AWB1" {
+        if c.take(4)? != b"AWB2" {
             return None;
         }
         let count = c.u16()? as usize;
@@ -527,7 +542,25 @@ impl Board {
             let tlen = c.u16()? as usize;
             let title = core::str::from_utf8(c.take(tlen)?).ok()?.to_string();
             let removable = c.u8()? != 0;
-            board.add_panel(kind, Rect::new(x, y, w, h), &title, removable);
+            let id = board.add_panel(kind, Rect::new(x, y, w, h), &title, removable);
+            // Restore bound content + live data (round-trips through publish/install).
+            let content = match c.u8()? {
+                0 => None,
+                1 => {
+                    let clen = c.u16()? as usize;
+                    Some(core::str::from_utf8(c.take(clen)?).ok()?.to_string())
+                }
+                _ => return None,
+            };
+            let dcount = c.u16()? as usize;
+            let mut data = Vec::with_capacity(dcount);
+            for _ in 0..dcount {
+                data.push(c.i64()?);
+            }
+            if let Some(p) = board.panels.iter_mut().find(|p| p.id == id) {
+                p.content = content;
+                p.data = data;
+            }
         }
         Some(board)
     }
@@ -732,6 +765,12 @@ impl<'a> Cursor<'a> {
     fn i16(&mut self) -> Option<i16> {
         let s = self.take(2)?;
         Some(i16::from_be_bytes([s[0], s[1]]))
+    }
+    fn i64(&mut self) -> Option<i64> {
+        let s = self.take(8)?;
+        let mut a = [0u8; 8];
+        a.copy_from_slice(s);
+        Some(i64::from_be_bytes(a))
     }
 }
 

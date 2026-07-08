@@ -1,4 +1,4 @@
-//! Aether JIT tier — hot-function specialization for the compiled VM.
+//! Dominion JIT tier — hot-function specialization for the compiled VM.
 //!
 //! The JIT sits on top of the bytecode VM ([`crate::lang::vm`]). When a user
 //! function has been called enough times to cross the hot threshold, its chunk is
@@ -115,7 +115,7 @@ fn fold_const(op: &BinOp, a: &Const, b: &Const) -> Option<Value> {
 /// The JIT call-count threshold: a function is specialized after this many calls.
 pub const HOT_THRESHOLD: u32 = 3;
 
-/// The Aether JIT. Wraps a [`CompiledProgram`] reference and maintains a
+/// The Dominion JIT. Wraps a [`CompiledProgram`] reference and maintains a
 /// per-function call-count table + the specialized [`HotFn`] cache.
 pub struct Jit<'p> {
     prog: &'p CompiledProgram,
@@ -289,7 +289,6 @@ mod tests {
     #[test]
     fn specialization_survives_unknown_ops() {
         // EvalExpr is an unknown/fallback op — must not crash the specializer.
-        use super::super::ast::Expr;
         let ops = [
             Op::EvalExpr(0),
             Op::Return,

@@ -442,7 +442,7 @@ fn probe_remote() -> bool {
         let node = KemIdentity::generate(b"remote-node-seed");
         let admin = DominionId::from_pubkey(b"admin-id");
         let (mut initiator, ct) = Session::initiate(admin, node.id, &node.public, b"eph-seed", 100).ok()?;
-        let responder = Session::accept(&node, admin, &ct, 100);
+        let mut responder = Session::accept(&node, admin, &ct, 100);
         // Remote shell: a capability-scoped command sealed across the PQ session.
         let cmd = b"eco run all";
         let shell_ok = responder.open(0, &initiator.seal(0, cmd).ok()?).ok()? == cmd;

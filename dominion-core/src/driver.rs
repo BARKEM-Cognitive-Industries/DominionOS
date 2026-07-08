@@ -516,7 +516,7 @@ impl Driver {
                     if end > blen {
                         return Err(DriverFault::OutOfBounds);
                     }
-                    io.bytes = dma.read(phys + off, *len);
+                    io.bytes.extend_from_slice(&dma.read(phys + off, *len));
                 }
                 RegOp::BufStoreVal { buf, off, value, width } => {
                     let (phys, blen) = self.buf(buf)?;

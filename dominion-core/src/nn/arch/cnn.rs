@@ -141,6 +141,12 @@ impl ConvLayer {
         if shape.len() != 4 || shape[1] != self.in_ch {
             return None;
         }
+        // Guard against degenerate geometry: out_dim divides by `stride`, so a
+        // stride of 0 (or a zero-sized kernel) would panic on integer divide-by-zero.
+        // Reject such configurations instead of dividing.
+        if self.stride == 0 || self.kh == 0 || self.kw == 0 {
+            return None;
+        }
         let (batch, _ic, h, w) = (shape[0], shape[1], shape[2], shape[3]);
         let h_out = Self::out_dim(h, self.kh, self.stride, self.padding);
         let w_out = Self::out_dim(w, self.kw, self.stride, self.padding);

@@ -151,7 +151,7 @@ pub fn read_back(dev: &mut dyn dominion_core::persist::BlockDevice) -> Option<al
 }
 
 /// **Automatic** best-effort persist (end-of-boot, shutdown, panic). Guarded: it only
-/// writes when the disk's tail is empty or already holds an DominionOS log, so it can
+/// writes when the disk's tail is empty or already holds a DominionOS log, so it can
 /// never overwrite real user data on a disk DominionOS doesn't own. No-ops with no disk.
 pub fn persist_best_effort() -> bool {
     crate::block::with_log_device(|dev, _is_real| persist_to_if_safe(dev).is_some())

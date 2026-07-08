@@ -630,12 +630,13 @@ impl TextBuffer {
             return 0;
         }
         let n = needle.chars().count();
+        let needle_chars: Vec<char> = needle.chars().collect();
         let mut count = 0;
         for row in 0..self.lines.len() {
             let mut chars: Vec<char> = self.lines[row].chars().collect();
             let mut col = 0;
             while col + n <= chars.len() {
-                if chars[col..col + n] == needle.chars().collect::<Vec<_>>()[..] {
+                if chars[col..col + n] == needle_chars[..] {
                     let rep: Vec<char> = replacement.chars().collect();
                     chars.splice(col..col + n, rep.iter().copied());
                     col += rep.len();

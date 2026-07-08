@@ -57,13 +57,11 @@ impl MonotonicClock {
     }
 }
 
-/// Keyed MAC over a message (`H(key ‖ "mac" ‖ msg)` — a PRF for this model).
+/// Keyed MAC over a message — HMAC-SHA256 (RFC 2104). A proper HMAC construction
+/// (not the length-extension-weak secret-prefix `H(key ‖ msg)`), so it stays a
+/// sound PRF even for variable-length messages.
 fn mac(key: &[u8], msg: &[u8]) -> Hash256 {
-    let mut input = Vec::with_capacity(key.len() + msg.len() + 4);
-    input.extend_from_slice(key);
-    input.extend_from_slice(b"mac:");
-    input.extend_from_slice(msg);
-    Hash256::of(&input)
+    Hash256(crate::tlscrypto::hmac_sha256(key, msg))
 }
 
 /// A timestamp attested by a named authority, bound to a freshness nonce.
@@ -116,7 +114,9 @@ pub fn verify_timestamp(key: &[u8], expected_nonce: u64, ts: &SignedTimestamp) -
         return false;
     }
     let expected = mac(key, &TimeAuthority::payload(ts.authority, ts.time, ts.nonce));
-    expected == ts.tag
+    // Constant-time tag compare: never leak the matching-prefix length (a MAC-forgery
+    // timing oracle). `Hash256`'s derived `==` short-circuits, so compare the bytes via ct_eq.
+    crate::cryptoct::ct_eq(&expected.0, &ts.tag.0)
 }
 
 /// The outcome of agreeing time across several authorities.

@@ -213,11 +213,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     if dominion_kernel::netif::init_global() {
         let m = dominion_kernel::netif::mac().0;
         boot_stage!(
-            "[boot] virtio-net online, MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            "[boot] NIC online (virtio-net / e1000), MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             m[0], m[1], m[2], m[3], m[4], m[5]
         );
     } else {
-        boot_stage!("[boot] no virtio-net device");
+        boot_stage!("[boot] no network device (virtio-net / e1000)");
     }
 
     // Stage G: seed the deterministic RNG from the hardware TRNG (RDRAND).

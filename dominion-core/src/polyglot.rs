@@ -38,6 +38,12 @@ use alloc::vec::Vec;
 /// gas meter does, and is the unit the benchmark battery counts.
 pub const DEFAULT_STEP_BUDGET: u64 = 50_000_000;
 
+/// Maximum guest call-recursion depth. The tree-walking interpreter is natively
+/// recursive (each guest frame consumes several Rust stack frames), so an
+/// unbounded guest recursion would overflow the kernel stack long before the
+/// step budget trips. This bound is kept well under what the kernel stack holds.
+pub const MAX_CALL_DEPTH: u32 = 256;
+
 // The lexer, parser, and AST were split out of this (formerly 2,600-line) file into
 // their own modules for readability; the value/error types, the interpreter, the
 // standard library, and the demo programs remain here. `parse` (parser) and the
@@ -266,6 +272,8 @@ struct Interp<'p> {
     funcs: BTreeMap<String, &'p Func>,
     steps: u64,
     budget: u64,
+    /// Current guest call-recursion depth, bounded by [`MAX_CALL_DEPTH`].
+    depth: u32,
     output: Vec<String>,
 }
 
@@ -308,7 +316,7 @@ pub fn call_func(
     }
     let arg_exprs: Vec<ast::Expr> = args.into_iter().map(value_to_expr).collect();
     let call_stmt = ast::Stmt::Expr(ast::Expr::Call(vec![key], arg_exprs));
-    let mut it = Interp { prog: &prog, funcs, steps: 0, budget: DEFAULT_STEP_BUDGET, output: Vec::new() };
+    let mut it = Interp { prog: &prog, funcs, steps: 0, budget: DEFAULT_STEP_BUDGET, depth: 0, output: Vec::new() };
     let mut env = BTreeMap::new();
     let value = match it.exec(&call_stmt, &mut env)? {
         Flow::Return(v) | Flow::Normal(v) => v,
@@ -322,7 +330,7 @@ pub fn execute(prog: &Program, budget: u64) -> Result<Run, RunError> {
     for f in &prog.funcs {
         funcs.insert(f.name.to_lowercase(), f);
     }
-    let mut it = Interp { prog, funcs, steps: 0, budget, output: Vec::new() };
+    let mut it = Interp { prog, funcs, steps: 0, budget, depth: 0, output: Vec::new() };
 
     // Run top-level statements; the program's value is the last expression's value,
     // or the value returned by a top-level `return`/the last top-level call.
@@ -490,6 +498,9 @@ impl<'p> Interp<'p> {
                 let mut v = Vec::new();
                 let mut i = a;
                 while i < b {
+                    // Meter range construction like every other guest operation, so a
+                    // huge range trips the step budget instead of OOM-ing the kernel.
+                    self.tick()?;
                     v.push(Value::Int(i));
                     i += 1;
                 }
@@ -620,16 +631,33 @@ impl<'p> Interp<'p> {
         if argv.len() != f.params.len() {
             return Err(RunError::BadArity(f.name.clone()));
         }
+        // Bound native-stack recursion: the tree-walker recurses through Rust frames
+        // per guest call, so a runaway guest would overflow the kernel stack long
+        // before the step budget trips.
+        if self.depth >= MAX_CALL_DEPTH {
+            return Err(RunError::OutOfGas);
+        }
+        self.depth += 1;
         let mut local: BTreeMap<String, Value> = BTreeMap::new();
         for (p, v) in f.params.iter().zip(argv) {
             local.insert(p.clone(), v);
         }
+        let mut result = Ok(Value::Unit);
         for s in &f.body {
-            if let Flow::Return(v) = self.exec(s, &mut local)? {
-                return Ok(v);
+            match self.exec(s, &mut local) {
+                Ok(Flow::Return(v)) => {
+                    result = Ok(v);
+                    break;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
             }
         }
-        Ok(Value::Unit)
+        self.depth -= 1;
+        result
     }
 }
 
@@ -674,7 +702,12 @@ fn binop(op: &BinOp, l: Value, r: Value) -> Result<Value, RunError> {
                 }
                 Value::Float(a / b)
             }
-            Rem => Value::Float(a - b * (a / b) as i64 as f64),
+            Rem => {
+                if b == 0.0 {
+                    return Err(RunError::DivideByZero);
+                }
+                Value::Float(a - b * (a / b) as i64 as f64)
+            }
             Lt => Value::Bool(a < b),
             Le => Value::Bool(a <= b),
             Gt => Value::Bool(a > b),
@@ -935,6 +968,12 @@ fn library(name: &str, a: &[Value]) -> Result<Value, RunError> {
         "repeat" => {
             let s = arg_s(a, 0)?;
             let n = arg_i(a, 1)?.max(0) as usize;
+            // Package functions run outside the interpreter's per-step metering, so
+            // cap the total output size to keep a hostile guest from OOM-ing the kernel.
+            const MAX_REPEAT_BYTES: usize = 1 << 20; // 1 MiB
+            if s.len().saturating_mul(n) > MAX_REPEAT_BYTES {
+                return Err(RunError::OutOfGas);
+            }
             let mut out = String::new();
             for _ in 0..n {
                 out.push_str(&s);

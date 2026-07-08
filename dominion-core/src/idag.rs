@@ -13,6 +13,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::collections::BTreeMap;
+use alloc::collections::BinaryHeap;
+use core::cmp::Reverse;
 
 // ── SlicePriority ─────────────────────────────────────────────────────────────
 
@@ -154,19 +156,33 @@ impl IDAG {
             }
         }
 
-        let mut ready: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
-        ready.sort_unstable(); // deterministic
+        // Min-heap on index keeps the same deterministic (lowest-index-first) order
+        // as the old sort while giving O(n log n) instead of O(n^2 log n) — no
+        // `remove(0)` shifting and no per-iteration re-sort on this hot path.
+        let mut ready: BinaryHeap<Reverse<usize>> =
+            (0..n).filter(|&i| in_degree[i] == 0).map(Reverse).collect();
 
         let mut order: Vec<u64> = Vec::with_capacity(n);
-        while !ready.is_empty() {
-            ready.sort_unstable();
-            let current = ready.remove(0);
+        while let Some(Reverse(current)) = ready.pop() {
             order.push(self.instructions[current].id);
             for &next in &edges[current] {
                 in_degree[next] -= 1;
                 if in_degree[next] == 0 {
-                    ready.push(next);
+                    ready.push(Reverse(next));
                 }
+            }
+        }
+
+        // Any nodes still carrying in_degree > 0 form a dependency cycle; Kahn's
+        // algorithm can never emit them. Rather than silently dropping them (which
+        // makes simulate_execution / critical_path_cycles compute over a partial
+        // graph and return wrong results with no error), surface the cycle by
+        // appending the stranded nodes in deterministic id order.
+        if order.len() != n {
+            let mut leftover: Vec<usize> = (0..n).filter(|&i| in_degree[i] > 0).collect();
+            leftover.sort_unstable();
+            for i in leftover {
+                order.push(self.instructions[i].id);
             }
         }
 

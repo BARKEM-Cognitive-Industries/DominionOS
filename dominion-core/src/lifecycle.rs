@@ -202,15 +202,20 @@ impl DataLifecycle {
         authority: Hash256,
         reason: TombstoneReason,
     ) -> bool {
-        let on_hold = self.items.iter().find(|i| i.id == id).map(|i| i.holds > 0).unwrap_or(true);
+        // Look the item up once. An unknown id is not "on hold" — it simply does
+        // not exist, so return false *without* writing a spurious
+        // EraseBlockedByHold entry into the tamper-evident audit trail.
+        let (on_hold, already_erased, class) = match self.items.iter().find(|i| i.id == id) {
+            Some(it) => (it.holds > 0, it.state == State::Erased, it.class),
+            None => return false,
+        };
         if on_hold {
             self.log(AuditEvent::EraseBlockedByHold, id, at);
             return false;
         }
-        let class = match self.items.iter().find(|i| i.id == id) {
-            Some(it) if it.state != State::Erased => it.class,
-            _ => return false,
-        };
+        if already_erased {
+            return false;
+        }
         if let Some(it) = self.item_mut(id) {
             it.key_alive = false; // crypto-GC: destroy the key
             it.state = State::Erased;

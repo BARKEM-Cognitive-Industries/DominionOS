@@ -115,18 +115,42 @@ pub struct ThresholdGroup {
 
 /// A guardian's contribution toward authorising a message — derived from their secret
 /// share, so only the share holder can produce it.
+///
+/// The partial reveals the guardian's secret `share` (the preimage of the group's
+/// published commitment) together with a message-binding `value`. Because the
+/// commitment is a one-way hash of the share, holding the public commitment alone is
+/// not enough to fabricate a partial — the secret share is required.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Partial {
     pub index: usize,
+    /// The guardian's secret share; its hash must equal `commitments[index]`.
+    share: Hash256,
+    /// Message binding: `H(share ‖ ":sig:" ‖ msg)`.
     value: Hash256,
 }
 
 /// A completed threshold authorization (proof a quorum signed) — carries *which*
 /// guardians contributed, never the secret.
+///
+/// Fields are private so an authorization can only be produced by
+/// [`ThresholdGroup::combine`], which validates a quorum of distinct partials.
+/// A caller cannot fabricate one by filling in the fields directly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThresholdAuth {
-    pub msg_hash: Hash256,
-    pub signers: Vec<usize>,
+    msg_hash: Hash256,
+    signers: Vec<usize>,
+}
+
+impl ThresholdAuth {
+    /// The hash of the authorised message.
+    pub fn msg_hash(&self) -> Hash256 {
+        self.msg_hash
+    }
+
+    /// The distinct guardian indices that contributed to this authorization.
+    pub fn signers(&self) -> &[usize] {
+        &self.signers
+    }
 }
 
 fn guardian_share(group_seed: &[u8], index: usize) -> Hash256 {
@@ -148,26 +172,34 @@ impl ThresholdGroup {
 
     /// A guardian signs `msg` with their secret `share` at `index`.
     ///
-    /// The partial value is `H(H(share) ‖ ":sig:" ‖ msg)` — a keyed hash that binds the
-    /// commitment (not the raw share) to the message. The verifier holds `H(share)` as the
-    /// commitment and can therefore recompute the expected value without ever seeing the share.
+    /// The partial reveals the secret `share` together with a message-binding value
+    /// `H(share ‖ ":sig:" ‖ msg)`. The verifier holds only `H(share)` as the public
+    /// commitment; since a hash preimage cannot be recovered from that commitment,
+    /// only the holder of the secret share can produce a matching partial — the public
+    /// commitment alone is not enough. Revealing a share does not reconstruct the
+    /// group secret, since shares are one-way-derived from it.
     pub fn partial_sign(index: usize, share: &Hash256, msg: &[u8]) -> Partial {
-        // commitment = H(share); value = H(commitment ‖ msg)
-        let commitment = Hash256::of(&share.0);
-        Partial { index, value: Hash256::of(&[commitment.0.as_ref(), b":sig:", msg].concat()) }
+        // value binds the secret share (not its public commitment) to the message.
+        let value = Hash256::of(&[share.0.as_ref(), b":sig:", msg].concat());
+        Partial { index, share: *share, value }
     }
 
     /// Verify a single partial against this group's commitment for that index.
     ///
-    /// Checks that `p.value == H(commitments[p.index] ‖ ":sig:" ‖ msg)`. A signer can
-    /// only produce this value if they know `H(share_i)`, which is the stored commitment —
-    /// forged partials with arbitrary values are rejected.
+    /// Checks that (a) the revealed share hashes to the stored commitment
+    /// (`H(p.share) == commitments[p.index]`) — which only the secret-share holder can
+    /// satisfy, since the commitment is a one-way hash of the share — and (b) the value
+    /// binds that share to `msg`. A partial fabricated from the public commitment data
+    /// alone (without the secret share) fails check (a) and is rejected.
     fn partial_valid(&self, p: &Partial, msg: &[u8]) -> bool {
         let commitment = match self.commitments.get(p.index) {
             Some(c) => c,
             None => return false,
         };
-        let expected = Hash256::of(&[commitment.0.as_ref(), b":sig:", msg].concat());
+        if Hash256::of(&p.share.0) != *commitment {
+            return false;
+        }
+        let expected = Hash256::of(&[p.share.0.as_ref(), b":sig:", msg].concat());
         p.value == expected
     }
 
@@ -191,7 +223,9 @@ impl ThresholdGroup {
 
     /// Verify an authorization: it carries a quorum of distinct signers and matches `msg`.
     pub fn verify(&self, auth: &ThresholdAuth, msg: &[u8]) -> bool {
-        auth.signers.len() >= self.threshold
+        let distinct: BTreeSet<usize> = auth.signers.iter().copied().collect();
+        distinct.len() == auth.signers.len()
+            && distinct.len() >= self.threshold
             && auth.msg_hash == Hash256::of(msg)
             && auth.signers.iter().all(|&i| i < self.commitments.len())
     }
@@ -344,14 +378,21 @@ mod tests {
 
     #[test]
     fn forged_partials_are_rejected_even_with_valid_indices() {
-        // Setup a 3-of-5 group; attacker has no access to the real shares.
-        let (group, _shares) = ThresholdGroup::setup(b"group-seed", 3, 5);
+        // Setup a 3-of-5 group; the attacker has the PUBLIC commitments but none of
+        // the secret shares.
+        let (group, shares) = ThresholdGroup::setup(b"group-seed", 3, 5);
         let msg = b"authorize: rotate vault key";
-        // Forge threshold-many partials with in-range indices but arbitrary values.
+        // The commitments (`H(share)`) are public verifier data. Mount the real attack:
+        // try to forge partials from the public commitments alone, by feeding each
+        // commitment where the secret share would go. This is exactly what an attacker
+        // holding only the published commitments can compute.
+        let commitments: Vec<Hash256> = shares.iter().map(|s| Hash256::of(&s.0)).collect();
         let forged: Vec<Partial> = (0..3)
-            .map(|i| Partial { index: i, value: Hash256::of(b"arbitrary-garbage") })
+            .map(|i| ThresholdGroup::partial_sign(i, &commitments[i], msg))
             .collect();
-        // partial_valid must reject every forged partial; combine must return None.
+        // partial_valid must reject every forged partial (H(commitment) != commitment);
+        // combine must return None. The secret share — not just its public hash — is
+        // required to reach a quorum.
         for p in &forged {
             assert!(
                 !group.partial_valid(p, msg),
@@ -363,6 +404,28 @@ mod tests {
             group.combine(&forged, msg).is_none(),
             "combine must not yield an auth from forged partials"
         );
+    }
+
+    #[test]
+    fn verify_rejects_duplicate_or_fabricated_signers() {
+        let (group, shares) = ThresholdGroup::setup(b"group-seed", 3, 5);
+        let msg = b"authorize: rotate vault key";
+        // A fabricated authorization with a single repeated signer must not satisfy a
+        // 3-of-5 gate — distinctness is enforced, not just the raw signer count.
+        let repeated = ThresholdAuth { msg_hash: Hash256::of(msg), signers: alloc::vec![0, 0, 0] };
+        assert!(!group.verify(&repeated, msg));
+        // A genuine quorum of distinct guardians still verifies.
+        let auth = group
+            .combine(
+                &[
+                    ThresholdGroup::partial_sign(0, &shares[0], msg),
+                    ThresholdGroup::partial_sign(1, &shares[1], msg),
+                    ThresholdGroup::partial_sign(2, &shares[2], msg),
+                ],
+                msg,
+            )
+            .unwrap();
+        assert!(group.verify(&auth, msg));
     }
 
     #[test]

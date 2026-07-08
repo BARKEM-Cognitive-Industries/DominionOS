@@ -21,11 +21,12 @@ use alloc::vec::Vec;
 /// A SHA-256 counter-mode keystream XOR — the keyed "adversarial perturbation"
 /// applied to the latent. With the key it is reversible; without it the carrier is
 /// opaque.
-fn keyed_xor(data: &[u8], key: &[u8]) -> Vec<u8> {
+fn keyed_xor(data: &[u8], key: &[u8], nonce: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
     for (counter, chunk) in data.chunks(32).enumerate() {
-        let mut input = Vec::with_capacity(key.len() + 8);
+        let mut input = Vec::with_capacity(key.len() + nonce.len() + 8);
         input.extend_from_slice(key);
+        input.extend_from_slice(nonce);
         input.extend_from_slice(&(counter as u64).to_le_bytes());
         let ks = Hash256::of(&input).0;
         for (i, &b) in chunk.iter().enumerate() {
@@ -43,6 +44,9 @@ pub struct ProtectedMedia {
     carrier: Vec<u8>,
     watermark: Hash256,
     original_hash: Hash256,
+    /// Per-media nonce folded into the keystream so two different contents under the
+    /// same owner key never share a pad (defeats the many-time-pad attack).
+    nonce: Hash256,
 }
 
 impl ProtectedMedia {
@@ -68,10 +72,17 @@ fn watermark_tag(key: &[u8], latent: &[u8], payload: &[u8]) -> Hash256 {
 /// content or verify the watermark.
 pub fn protect(content: &[u8], key: &[u8], watermark: &[u8]) -> ProtectedMedia {
     let latent = compress(content);
+    // A content-derived, per-media nonce: unique to this content (so distinct media
+    // get distinct keystreams) and deterministic (no RNG needed in this no_std path).
+    let mut nonce_input = Vec::with_capacity(content.len() + 6);
+    nonce_input.extend_from_slice(b"nonce:");
+    nonce_input.extend_from_slice(content);
+    let nonce = Hash256::of(&nonce_input);
     ProtectedMedia {
-        carrier: keyed_xor(&latent, key),
+        carrier: keyed_xor(&latent, key, &nonce.0),
         watermark: watermark_tag(key, &latent, watermark),
         original_hash: Hash256::of(content),
+        nonce,
     }
 }
 
@@ -79,7 +90,7 @@ pub fn protect(content: &[u8], key: &[u8], watermark: &[u8]) -> ProtectedMedia {
 /// not self-degraded. Returns `None` if the key is wrong or the content was
 /// re-encoded without authorization (the poison fired).
 pub fn recover(media: &ProtectedMedia, key: &[u8]) -> Option<Vec<u8>> {
-    let latent = keyed_xor(&media.carrier, key);
+    let latent = keyed_xor(&media.carrier, key, &media.nonce.0);
     let content = decompress(&latent);
     if Hash256::of(&content) == media.original_hash {
         Some(content)
@@ -91,7 +102,7 @@ pub fn recover(media: &ProtectedMedia, key: &[u8]) -> Option<Vec<u8>> {
 /// **Verify** that the SLIC watermark is intact for `payload` under `key`. An
 /// unauthorized re-encode perturbs the latent and breaks this — tamper-evidence.
 pub fn watermark_intact(media: &ProtectedMedia, key: &[u8], payload: &[u8]) -> bool {
-    let latent = keyed_xor(&media.carrier, key);
+    let latent = keyed_xor(&media.carrier, key, &media.nonce.0);
     watermark_tag(key, &latent, payload) == media.watermark
 }
 
@@ -109,6 +120,7 @@ pub fn unauthorized_reencode(media: &ProtectedMedia) -> ProtectedMedia {
         carrier: degraded,
         watermark: media.watermark,
         original_hash: media.original_hash,
+        nonce: media.nonce,
     }
 }
 

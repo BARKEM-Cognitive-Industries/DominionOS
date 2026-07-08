@@ -1,7 +1,7 @@
-//! Aether bytecode VM — a fast register-threaded stack machine that executes
+//! Dominion bytecode VM — a fast register-threaded stack machine that executes
 //! [`CompiledProgram`](super::bytecode::CompiledProgram) chunks.
 //!
-//! The VM is the primary execution tier for Aether. It runs every instruction
+//! The VM is the primary execution tier for Dominion. It runs every instruction
 //! the compiler lowers natively (arithmetic, locals/globals, control flow,
 //! aggregates, user function calls) and falls back to the tree-walking
 //! [`Interpreter`](super::Interpreter) for the small set of operations that
@@ -62,7 +62,7 @@ struct Frame {
 
 // ── VM ──────────────────────────────────────────────────────────────────────
 
-/// The Aether stack-machine VM.
+/// The Dominion stack-machine VM.
 pub struct Vm<'p> {
     prog: &'p CompiledProgram,
     /// The single shared value stack.

@@ -130,11 +130,17 @@ impl DomainMemory {
 
     /// Seal an object into encrypted RAM under this domain's key.
     pub fn seal(&mut self, id: u64, plaintext: &[u8]) {
-        // Use the object ID directly as the region salt — IDs are unique per
-        // DomainMemory instance (and therefore per key), so no two regions
-        // under this key will ever share the same (key, IV) prefix.
-        let region = SealedRegion::seal(self.key, &id.to_le_bytes(), id, plaintext);
-        self.regions.insert(id, region);
+        // The object ID is the region salt. SealedRegion's IV binds the full 64-bit
+        // salt, so distinct IDs never collide on the (key, IV) pair. Re-sealing an
+        // existing ID must *advance* that region's nonce counter, not reset it: build
+        // a fresh SealedRegion only for a new ID, otherwise reseal the stored region
+        // in place (reseal increments nonce_ctr) so the same (key, IV) is never reused.
+        if let Some(region) = self.regions.get_mut(&id) {
+            region.reseal(plaintext);
+        } else {
+            let region = SealedRegion::seal(self.key, &id.to_le_bytes(), id, plaintext);
+            self.regions.insert(id, region);
+        }
     }
 
     /// Read an object — materialises plaintext **only** if the caller presents a

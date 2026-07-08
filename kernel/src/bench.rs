@@ -1578,12 +1578,14 @@ fn bench_network(clk: &Clock) {
         Some(t) => t,
         None => {
             serial_println!("BENCH network status=no_nic skipped=true");
+            set_timer_hz(1000);
             return;
         }
     };
 
     if !t.online() {
         serial_println!("BENCH network status=nic_offline skipped=true");
+        set_timer_hz(1000);
         return;
     }
 

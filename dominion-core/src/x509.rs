@@ -304,6 +304,11 @@ impl Big {
 
     /// Modular exponentiation: self^exp mod m.
     fn modexp(&self, exp: &Big, m: &Big) -> Big {
+        // Guard degenerate moduli so untrusted certs can never reach divmod with a
+        // zero divisor (which indexes limbs[len-1] out of bounds and panics).
+        if m.is_zero() {
+            return Big::zero();
+        }
         if m.cmp(&Big::from_be_bytes(&[1])) == core::cmp::Ordering::Equal {
             return Big::zero();
         }
@@ -599,7 +604,7 @@ fn rsa_pss_verify(n: &[u8], e: &[u8], message: &[u8], signature: &[u8]) -> bool 
     let h = &em[masked_db_len..masked_db_len + hlen];
     // Top bits beyond modBits-1 must be zero.
     let top_bits = 8 * emlen - (modbits - 1);
-    if top_bits < 8 && (masked_db[0] >> (8 - top_bits)) != 0 {
+    if top_bits > 0 && top_bits < 8 && (masked_db[0] >> (8 - top_bits)) != 0 {
         return false;
     }
     let db_mask = mgf1_sha256(h, masked_db_len);
@@ -1262,7 +1267,7 @@ impl TrustStore {
             if now != 0 && (now < parent.not_before || now > parent.not_after) {
                 return Err(X509Error::Expired);
             }
-            if child.issuer != parent.subject || !child.verify_signed_by(parent) {
+            if child.issuer != parent.subject || !parent.is_ca || !child.verify_signed_by(parent) {
                 return Err(X509Error::BadSignature);
             }
         }

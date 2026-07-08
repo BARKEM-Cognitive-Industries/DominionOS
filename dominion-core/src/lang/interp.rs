@@ -1,4 +1,4 @@
-//! The Aether tree-walking interpreter.
+//! The Dominion tree-walking interpreter.
 //!
 //! This is where the language stops being syntax and becomes the OS's execution
 //! model. Two SRS ideas are enforced here at runtime:
@@ -105,7 +105,7 @@ fn cap_name_to_rights(name: &str) -> Option<Rights> {
     }
 }
 
-/// The Aether runtime. One interpreter == one execution domain with a fixed set
+/// The Dominion runtime. One interpreter == one execution domain with a fixed set
 /// of granted capabilities.
 pub struct Interpreter {
     scopes: Vec<BTreeMap<String, Value>>,
@@ -127,7 +127,7 @@ pub struct Interpreter {
     /// Cryptographic-invalidation tokens for affine values destroyed at scope end
     /// (the content hash of each, recorded as proof of pause-free reclamation).
     invalidations: Vec<Hash256>,
-    /// Capability-gated driver registry: device specs Aether can list, inspect,
+    /// Capability-gated driver registry: device specs Dominion can list, inspect,
     /// edit and invoke via the `Driver::*` namespace. Drivers are *data*, validated
     /// before binding, so editing one can never express raw kernel code.
     drivers: BTreeMap<String, crate::driver::DeviceSpec>,
@@ -139,6 +139,12 @@ pub struct Interpreter {
     call_memo: BTreeMap<(String, String), Value>,
     /// Per-function purity verdict cache (computed once, conservatively).
     fn_purity: BTreeMap<String, bool>,
+    /// Functions currently mid-purity-analysis, each with a `tainted` flag that is
+    /// set when the analysis observed a provisional (assumed-pure) recursive
+    /// callee. A tainted `true` verdict must **not** be cached — its correctness
+    /// still hinges on an assumption that may later resolve to impure (see
+    /// [`Self::fn_is_pure`]).
+    purity_stack: Vec<(String, bool)>,
     /// Current user-function call depth, used to enforce [`MAX_CALL_DEPTH`].
     call_depth: usize,
 }
@@ -167,6 +173,7 @@ impl Interpreter {
             drivers: crate::netspec::default_registry(),
             call_memo: BTreeMap::new(),
             fn_purity: BTreeMap::new(),
+            purity_stack: Vec::new(),
             call_depth: 0,
         }
     }
@@ -425,12 +432,18 @@ impl Interpreter {
         // `acc = acc + <poly(i)>` (acc declared outside the loop, body otherwise
         // pure) collapses to a Faulhaber sum in O(1) regardless of n.
         if let Some(()) = self.try_closed_form_accumulator(var, n, body)? {
+            // Match the slow path's post-loop visibility: the induction variable
+            // persists in the outer scope holding Int(n-1) after n iterations
+            // (Unit when the loop never ran), so `... ; print(i)` behaves the
+            // same whether or not this fast path fired.
+            self.define(var.to_string(), last_induction_value(n));
             return Ok(Value::Unit);
         }
         // ── Fast path B: dead-loop elimination ───────────────────────────────
         // A side-effect-free body whose value is discarded is a no-op N times
         // over — skip the whole loop in O(1), exactly as -O2 would.
         if n > 0 && body_is_pure_and_discardable(body, var) {
+            self.define(var.to_string(), last_induction_value(n));
             return Ok(Value::Unit);
         }
         // ── Slow-but-safe path: one reused scope, slot overwritten per iter ───
@@ -547,7 +560,7 @@ impl Interpreter {
                 parts.join("::")
             )))),
             Expr::Neg(inner) => match self.eval(inner)? {
-                Value::Int(i) => Ok(Value::Int(-i)),
+                Value::Int(i) => Ok(Value::Int(i.wrapping_neg())),
                 Value::Float(f) => Ok(Value::Float(-f)),
                 Value::Decimal(d) => Ok(Value::Decimal(d.neg())),
                 Value::Rational(r) => Ok(Value::Rational(r.neg())),
@@ -681,7 +694,7 @@ impl Interpreter {
                 // The capability-gated driver registry. Drivers are data: list and
                 // inspect (Read), edit the resource claim / register map (Write), and
                 // invoke an operation (Execute). Every edit is re-validated before it
-                // is kept, so Aether can never bind a malformed or escaping driver.
+                // is kept, so Dominion can never bind a malformed or escaping driver.
                 ("Driver", "list") => return self.driver_list(),
                 ("Driver", "inspect") => return self.driver_inspect(&args),
                 ("Driver", "ops") => return self.driver_ops(&args),
@@ -783,8 +796,15 @@ impl Interpreter {
             args.iter().map(|a| a.encode_key()).collect::<Option<Vec<_>>>().map(|parts| {
                 let mut key = String::new();
                 for p in parts {
+                    // Length-prefix each argument's encoding as `<len>:<enc>` so
+                    // no combination of contents can forge the same concatenation.
+                    // A bare `|` separator is ambiguous: `encode_key` renders
+                    // Str/Vector contents unescaped, so `("p|s:q", "r")` and
+                    // `("p", "q|s:r")` would otherwise collide on one key and
+                    // return each other's cached (wrong) result.
+                    key.push_str(&p.len().to_string());
+                    key.push(':');
                     key.push_str(&p);
-                    key.push('|');
                 }
                 (f.name.clone(), key)
             })
@@ -827,13 +847,32 @@ impl Interpreter {
         if let Some(p) = self.fn_purity.get(&f.name) {
             return *p;
         }
-        // Insert `false` first so a self-recursive function does not loop forever
-        // during analysis; recursion to a still-being-analysed fn is treated as
-        // "assume pure" via the name being present, resolved below.
-        self.fn_purity.insert(f.name.clone(), true);
+        // Recursion: `f` is already mid-analysis further up the stack. Break the
+        // cycle by *assuming* it pure — but that assumption is unproven until `f`
+        // itself resolves, so taint every frame nested inside `f`'s (those at a
+        // higher stack index). A tainted frame's `true` verdict rides on this
+        // assumption and must not be permanently cached: if `f` later turns out
+        // impure, a callee cached as pure here would silently memoise away `f`'s
+        // side effects. `f`'s own frame is left untainted — once its analysis
+        // completes it is the sound greatest-fixed-point verdict for the cycle.
+        if let Some(i) = self.purity_stack.iter().position(|(n, _)| *n == f.name) {
+            for frame in self.purity_stack[i + 1..].iter_mut() {
+                frame.1 = true;
+            }
+            return true;
+        }
+        self.purity_stack.push((f.name.clone(), false));
         let params: Vec<&str> = f.params.iter().map(|s| s.as_str()).collect();
         let pure = self.block_is_pure(&f.body, &params);
-        self.fn_purity.insert(f.name.clone(), pure);
+        let tainted = self.purity_stack.pop().map(|(_, t)| t).unwrap_or(true);
+        // `false` is always safe to cache. Cache a `true` verdict only when it did
+        // not rest on an unresolved recursive assumption; otherwise return it but
+        // leave it uncached so it is recomputed once the assumed callees resolve.
+        if !pure {
+            self.fn_purity.insert(f.name.clone(), false);
+        } else if !tainted {
+            self.fn_purity.insert(f.name.clone(), true);
+        }
         pure
     }
 
@@ -970,7 +1009,10 @@ impl Interpreter {
                     let mut acc = 0i64;
                     for it in v {
                         match it {
-                            Value::Int(i) => acc += i,
+                            // Wrapping to match the interpreter's Int semantics
+                            // (binary()/`product` also wrap); plain `+=` would
+                            // overflow-panic on large sums in a checked build.
+                            Value::Int(i) => acc = acc.wrapping_add(*i),
                             _ => return Err(rt("sum expects a Vector of Int")),
                         }
                     }
@@ -1021,7 +1063,7 @@ impl Interpreter {
                             Value::Float(f) => *f as i64,
                             _ => return Err(rt("summarise expects a Vector of numbers")),
                         };
-                        sum += n;
+                        sum = sum.wrapping_add(n);
                         min = min.min(n);
                         max = max.max(n);
                     }
@@ -1351,7 +1393,12 @@ impl Interpreter {
                 }
                 let mut best = items[0].clone();
                 for it in &items[1..] {
-                    let take = as_f64(it)? > as_f64(&best)?;
+                    // Exact i64 ordering for Int/Int; f64 coercion (the fallback)
+                    // loses precision above 2^53. Fall back only for Floats.
+                    let take = match (it, &best) {
+                        (Value::Int(a), Value::Int(b)) => a > b,
+                        _ => as_f64(it)? > as_f64(&best)?,
+                    };
                     if take == want_max {
                         best = it.clone();
                     }
@@ -1472,9 +1519,14 @@ impl Interpreter {
             "sort" => match args.first() {
                 Some(Value::Vector(v)) => {
                     let mut x = v.clone();
-                    x.sort_by(|a, b| match (as_f64(a), as_f64(b)) {
-                        (Ok(x), Ok(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
-                        _ => format!("{}", a).cmp(&format!("{}", b)),
+                    x.sort_by(|a, b| match (a, b) {
+                        // Exact i64 ordering for Int/Int; f64 coercion loses
+                        // precision above 2^53. Fall back for Floats / mixed.
+                        (Value::Int(m), Value::Int(n)) => m.cmp(n),
+                        _ => match (as_f64(a), as_f64(b)) {
+                            (Ok(x), Ok(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+                            _ => format!("{}", a).cmp(&format!("{}", b)),
+                        },
                     });
                     Value::Vector(x)
                 }
@@ -2246,7 +2298,7 @@ impl Interpreter {
     }
 
     /// `Lang::call(lang, src, fn_name, ..args)` — call a named function in another
-    /// language with Aether values as arguments; returns the typed result value (Execute).
+    /// language with Dominion values as arguments; returns the typed result value (Execute).
     fn lang_call(&mut self, args: &[Value]) -> Eval {
         self.require(Rights::EXECUTE, "Lang::call")?;
         match args {
@@ -2393,6 +2445,20 @@ impl Interpreter {
             Eq => Ok(Bool(values_equal(&l, &r))),
             Ne => Ok(Bool(!values_equal(&l, &r))),
             Lt | Gt | Le | Ge => {
+                // Compare two Ints exactly as i64. Coercing to f64 (the fallback
+                // below) collapses magnitudes above 2^53, so distinct i64 would
+                // compare equal or out of order — and disagree with the exact
+                // Eq/Ne path. Only fall back to f64 when a Float is involved.
+                if let (Int(a), Int(b)) = (&l, &r) {
+                    let v = match op {
+                        Lt => a < b,
+                        Gt => a > b,
+                        Le => a <= b,
+                        Ge => a >= b,
+                        _ => unreachable!(),
+                    };
+                    return Ok(Bool(v));
+                }
                 let (a, b) = numeric(&l, &r)
                     .ok_or_else(|| RuntimeError::new("comparison on non-numeric types"))?;
                 let v = match op {
@@ -2700,7 +2766,7 @@ fn expr_mentions(e: &Expr, name: &str) -> bool {
 
 // ─────────────── polyglot value converters ───────────────
 
-/// Convert a guest-language [`crate::polyglot::Value`] to an Aether [`Value`],
+/// Convert a guest-language [`crate::polyglot::Value`] to a Dominion [`Value`],
 /// preserving type information (Int→Int, Float→Float, Bool→Bool, Str→Str, List→Vector).
 fn polyglot_val_to_dominion(v: crate::polyglot::Value) -> Value {
     match v {
@@ -2713,7 +2779,7 @@ fn polyglot_val_to_dominion(v: crate::polyglot::Value) -> Value {
     }
 }
 
-/// Convert an Aether [`Value`] to a guest-language [`crate::polyglot::Value`]
+/// Convert a Dominion [`Value`] to a guest-language [`crate::polyglot::Value`]
 /// for passing as typed function arguments into `Lang::call`.
 fn dominion_to_polyglot(v: &Value) -> crate::polyglot::Value {
     match v {
@@ -2960,9 +3026,27 @@ fn stmt_is_loop_pure(s: &Stmt, locals: &mut Vec<String>) -> bool {
     }
 }
 
+/// The value the induction variable holds *after* a counted `for var in 0..n`
+/// loop: `Int(n-1)` once the body has run at least once, `Unit` when `n == 0`
+/// (the body never executed). Mirrors the slow path's post-loop binding so the
+/// closed-form / dead-loop fast paths leave the same variable visible.
+fn last_induction_value(n: u64) -> Value {
+    if n == 0 {
+        Value::Unit
+    } else {
+        Value::Int((n - 1) as i64)
+    }
+}
+
 fn expr_is_loop_pure(e: &Expr, locals: &[String]) -> bool {
     match e {
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Ident(_) => true,
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => true,
+        // Reading a *non-local* identifier is not effect-free: it may resolve to
+        // an affine (`linear`) binding, which reading *moves* (takes the slot and
+        // records a cryptographic invalidation), and a second read faults
+        // use-after-move. Only loop-locals are provably safe to read, so a
+        // non-local read must disqualify dead-loop elimination.
+        Expr::Ident(name) => locals.iter().any(|l| l == name),
         Expr::Path(_) => false,
         Expr::Neg(x) | Expr::Not(x) => expr_is_loop_pure(x, locals),
         Expr::Binary(_, l, r) => expr_is_loop_pure(l, locals) && expr_is_loop_pure(r, locals),
@@ -3419,7 +3503,7 @@ mod tests {
     #[test]
     fn driver_is_invokable_from_dominion() {
         // The cooperative model drives the nvme class template's "submit" op; DATA
-        // (0xA5) is the value read back — proof a driver ran end-to-end from Aether.
+        // (0xA5) is the value read back — proof a driver ran end-to-end from Dominion.
         let out = eval("Driver::invoke(\"nvme\", \"submit\")");
         assert_eq!(out, Value::Vector(alloc::vec![Value::Int(0xA5)]));
     }
@@ -3696,7 +3780,7 @@ mod tests {
     #[test]
     fn neural_network_trains_and_infers_in_the_language() {
         // Build a 2→8→1 MLP, train it on XOR, and check the loss dropped — a real
-        // gradient-descent training loop driven entirely from Aether source.
+        // gradient-descent training loop driven entirely from Dominion source.
         let mut it = Interpreter::new();
         it.eval_str("let m = mlp([2, 8, 1])").unwrap();
         let before = match it.eval_str("nn_loss(m)").unwrap() {

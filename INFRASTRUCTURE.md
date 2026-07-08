@@ -1,12 +1,12 @@
-# Infrastructure Setup for AetherOS
+# Infrastructure Setup for DominionOS
 
-This guide covers setting up the infrastructure needed for AetherOS to function as a distributed system: the AetherLink network, package repository, and public pool.
+This guide covers setting up the infrastructure needed for DominionOS to function as a distributed system: the DominionLink network, package repository, and public pool.
 
 ---
 
 ## Overview
 
-AetherOS is designed to work both standalone (in QEMU or on bare metal) and as part of a distributed network. To fully enable that vision, several services need to be deployed and configured.
+DominionOS is designed to work both standalone (in QEMU or on bare metal) and as part of a distributed network. To fully enable that vision, several services need to be deployed and configured.
 
 **Current Status:** Designed and partially implemented. Not yet in production.
 
@@ -14,7 +14,7 @@ AetherOS is designed to work both standalone (in QEMU or on bare metal) and as p
 
 ## What We Need to Set Up
 
-### 1. AetherLink Network (Named Data Networking)
+### 1. DominionLink Network (Named Data Networking)
 
 **What it is:** A decentralized content-addressed network layer. Nodes publish and resolve data by name/hash, similar to IPFS but with capability-based access control.
 
@@ -23,18 +23,18 @@ AetherOS is designed to work both standalone (in QEMU or on bare metal) and as p
 - ✅ Content addressing (SHA-256 hashes)
 - ✅ Kademlia DHT (distributed hash table)
 - ✅ DominionLink (self-certifying IDs + key-based routing)
-- ✅ DNS bridge (AetherLink names ↔ DNS A records)
+- ✅ DNS bridge (DominionLink names ↔ DNS A records)
 
 **What we need to set up:**
 
-#### A. Public AetherLink Bootstrap Nodes
+#### A. Public DominionLink Bootstrap Nodes
 ```
 Number needed: 3-5 for redundancy
 Hardware per node: 2 vCPU, 4 GB RAM, 100 GB SSD (for DHT state)
 Location: Geographic diversity (US, EU, Asia preferred)
 
 Role: 
-- Accept connections from peers (AetherOS instances)
+- Accept connections from peers (DominionOS instances)
 - Maintain DHT routing table
 - Respond to content lookups
 - Cache frequently accessed objects
@@ -42,20 +42,20 @@ Role:
 
 **How to deploy:**
 ```bash
-# Build the AetherLink node daemon
+# Build the DominionLink node daemon
 cd kernel
-cargo build --release --bin aetherlink-node
+cargo build --release --bin dominionlink-node
 
 # Run as a service (systemd example)
 [Unit]
-Description=AetherLink Bootstrap Node
+Description=DominionLink Bootstrap Node
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/aetherlink-node \
+ExecStart=/usr/local/bin/dominionlink-node \
   --listen 0.0.0.0:5000 \
-  --dht-table /var/lib/aetherlink/dht.db \
+  --dht-table /var/lib/dominionlink/dht.db \
   --cache-size 50G
 Restart=always
 RestartSec=10s
@@ -65,35 +65,35 @@ WantedBy=multi-user.target
 ```
 
 **Configuration needed:**
-- Bootstrap node IDs (hardcoded in AetherOS)
+- Bootstrap node IDs (hardcoded in DominionOS)
 - Network addresses (IPs or DNS names)
 - Firewall rules (UDP port 5000, TCP ports optional)
 - Monitoring (health checks, uptime tracking)
 
 #### B. DNS Bridge
 ```
-Role: Translate domain names to AetherLink content hashes
+Role: Translate domain names to DominionLink content hashes
 
 Example:
-  aether://my-app/v1.0  → DNS lookup my-app.aether.link
-  → CNAME to aetherlink-bootstrap-1.cognitive-industries.org
+  dominion://my-app/v1.0  → DNS lookup my-app.dominion.link
+  → CNAME to dominionlink-bootstrap-1.cognitive-industries.org
   → Server resolves to content hash
   → Client fetches from DHT
 ```
 
 **How to set up:**
 ```
-1. Register domain: aether.link (or similar)
+1. Register domain: dominion.link (or similar)
 2. Set up DNS server (Route53, Cloudflare, or self-hosted)
 3. Create CNAME entries for bootstrap nodes
-4. Optionally: HTTP gateway at aether.link for web browsers
+4. Optionally: HTTP gateway at dominion.link for web browsers
 ```
 
 ---
 
 ### 2. Package Repository
 
-**What it is:** A registry of pre-built packages (libraries, apps, drivers) that can be installed into AetherOS instances.
+**What it is:** A registry of pre-built packages (libraries, apps, drivers) that can be installed into DominionOS instances.
 
 **What's implemented:**
 - ✅ Package versioning (semantic)
@@ -108,7 +108,7 @@ Example:
 Role: Store and serve packages
 
 Hardware: 4 vCPU, 8 GB RAM, 1-10 TB SSD (depends on package volume)
-Location: Any region (replicated via AetherLink DHT)
+Location: Any region (replicated via DominionLink DHT)
 
 Stores:
 - Canonical package versions
@@ -125,14 +125,14 @@ cargo build --release --bin pkg-server
 
 # Run as a service
 [Unit]
-Description=AetherOS Package Server
-After=network.target aetherlink-node.service
+Description=DominionOS Package Server
+After=network.target dominionlink-node.service
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/pkg-server \
   --listen 0.0.0.0:6000 \
-  --aetherlink-bootstrap <bootstrap-node-ids> \
+  --dominionlink-bootstrap <bootstrap-node-ids> \
   --storage /var/lib/pkgrepo
 Restart=always
 
@@ -172,7 +172,7 @@ Example structure:
   "versions": [
     {
       "version": "1.0.0",
-      "aether-os-min": "1.0.0",
+      "dominion-os-min": "1.0.0",
       "content-hash": "sha256:...",
       "size": 102400,
       "published": "2026-06-22T00:00:00Z",
@@ -216,14 +216,14 @@ cargo build --release --bin pool-coordinator
 
 # Run as a service
 [Unit]
-Description=AetherOS Compute Pool Coordinator
-After=network.target aetherlink-node.service
+Description=DominionOS Compute Pool Coordinator
+After=network.target dominionlink-node.service
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/pool-coordinator \
   --listen 0.0.0.0:7000 \
-  --aetherlink-bootstrap <bootstrap-node-ids> \
+  --dominionlink-bootstrap <bootstrap-node-ids> \
   --min-workers 5
 Restart=always
 
@@ -238,7 +238,7 @@ Role: Execute jobs, report results
 Hardware: Variable (1+ vCPU, 2+ GB RAM per worker)
 Location: Distributed (personal computers, data centers, edge nodes)
 
-Runs: AetherOS in a VM, connects to coordinator, accepts jobs
+Runs: DominionOS in a VM, connects to coordinator, accepts jobs
 ```
 
 **How to set up:**
@@ -258,11 +258,11 @@ Runs: AetherOS in a VM, connects to coordinator, accepts jobs
 
 - [ ] **Deploy 3 bootstrap nodes**
   - Hardware: Rent on AWS, DigitalOcean, or equivalent
-  - Setup: Install AetherLink node daemon
+  - Setup: Install DominionLink node daemon
   - Networking: Open ports, configure DNS
   - Monitoring: Health checks, uptime tracking
 
-- [ ] **Register aether.link domain**
+- [ ] **Register dominion.link domain**
   - DNS provider: Cloudflare, Route53, or self-hosted
   - CNAME entries: Point to bootstrap nodes
   - DNSSEC: Optional but recommended
@@ -273,7 +273,7 @@ Runs: AetherOS in a VM, connects to coordinator, accepts jobs
   - Signing key: Generate and secure-store root key
 
 - [ ] **Documentation**
-  - How to connect AetherOS instance to network
+  - How to connect DominionOS instance to network
   - How to publish packages
   - How to submit jobs (if pool is enabled)
 
@@ -333,7 +333,7 @@ Coordinator:                   $5-10/month
   - 2 vCPU, 4 GB RAM, 100 GB SSD
 
 Domain:                        $12-20/year
-  - aether.link registration
+  - dominion.link registration
 
 DNS:                           Free-10/month
   - If self-hosted: minimal
@@ -371,12 +371,12 @@ Root signing key:
   - Never share
 
 Bootstrap node IDs:
-  - Public (hardcoded in AetherOS)
+  - Public (hardcoded in DominionOS)
   - But: network traffic is encrypted (DominionLink provides encryption)
 
 Package signatures:
   - Each package signed with root key
-  - Verification before install (mandatory in AetherOS)
+  - Verification before install (mandatory in DominionOS)
 ```
 
 ### Access Control
@@ -445,7 +445,7 @@ Job reproducibility:
 name = "bootstrap-1"
 node_id = "sha256:..."
 addresses = [
-  "bootstrap-1.aether.link:5000",
+  "bootstrap-1.dominion.link:5000",
   "1.2.3.4:5000"
 ]
 dht_port = 5000
@@ -455,7 +455,7 @@ https = false
 name = "bootstrap-2"
 node_id = "sha256:..."
 addresses = [
-  "bootstrap-2.aether.link:5000",
+  "bootstrap-2.dominion.link:5000",
   "5.6.7.8:5000"
 ]
 ```

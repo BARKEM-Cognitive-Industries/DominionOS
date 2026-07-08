@@ -65,6 +65,12 @@ impl WorkingSet {
     /// dropped. Returns the ids that were evicted (still re-fetchable by hash).
     pub fn admit(&mut self, id: Hash256, bytes: usize, dirty: bool) -> Vec<Hash256> {
         self.clock += 1;
+        // If this id is already resident, drop the stale copy first so its bytes are
+        // counted exactly once — otherwise `used` inflates permanently and the reclaim
+        // loop below over-evicts other objects.
+        if let Some(old) = self.resident.remove(&id) {
+            self.used = self.used.saturating_sub(old.bytes);
+        }
         let mut evicted = Vec::new();
         // Reclaim until the newcomer fits (or nothing more can be reclaimed).
         while self.used + bytes > self.quota {
@@ -291,9 +297,13 @@ impl TieredWorkingSet {
         dirty: bool,
         preferred: MemoryTier,
     ) -> AdmitResult {
-        // Remove from current tier if already placed.
+        // Remove from current tier if already placed. Must actually evict the stale
+        // copy from the old tier's underlying WorkingSet, not just the placement map —
+        // otherwise it stays resident there forever, inflating that tier's accounting
+        // and remaining unreachable to `evict_from` (which enumerates via placement).
         if let Some(old_tier) = self.placement.remove(&id) {
             let idx = Self::tier_index(old_tier);
+            self.tiers[idx].0.remove(id);
             self.tiers[idx].1.bytes_resident =
                 self.tiers[idx].0.used();
         }

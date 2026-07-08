@@ -190,7 +190,7 @@ mod tests {
             let bob = KemIdentity::generate(&input.bytes(8));
             let (mut a, ct) =
                 Session::initiate(alice.id, bob.id, &bob.public, &input.bytes(8), 1000).unwrap();
-            let b = Session::accept(&bob, alice.id, &ct, 1000);
+            let mut b = Session::accept(&bob, alice.id, &ct, 1000);
             let msg = input.blob(64);
             let frame = a.seal(1, &msg).unwrap();
             assert_eq!(b.open(1, &frame).as_deref(), Ok(msg.as_slice()));

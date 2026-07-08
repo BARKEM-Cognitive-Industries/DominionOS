@@ -178,6 +178,10 @@ impl FleetIndex {
     pub fn digest(&self) -> Hash256 {
         let mut input = Vec::new();
         for (k, e) in &self.entries {
+            // Length-prefix the variable-length scope so the encoding is injective:
+            // without a delimiter, distinct index states could serialise to the same
+            // byte stream and hash equal, falsely reporting divergent devices as converged.
+            input.extend_from_slice(&(k.len() as u32).to_le_bytes());
             input.extend_from_slice(k.as_bytes());
             input.extend_from_slice(&e.root.0);
         }

@@ -3,7 +3,7 @@
 //!
 //! A browser tab is a *page object in a web view*. Two render paths:
 //!
-//! * **Native** — an Dominion-native semantic page (`dominionweb`/NDN) rendered directly
+//! * **Native** — a Dominion-native semantic page (`dominionweb`/NDN) rendered directly
 //!   to a [`crate::toolkit`] scene.
 //! * **Legacy** — a today's-web page (HTML/JS) run **contained** in the sandbox VM
 //!   with only network + surface capabilities.
@@ -69,7 +69,7 @@ pub enum WasmOutcome {
     /// The resource was identified as WASM but no compiled bytecode was provided
     /// (e.g. the fetch is still in-flight, or the compiler hasn't run yet).
     ///
-    /// NOTE: AetherOS's WASM sandbox (`wasm::Sandbox`) operates on its own typed
+    /// NOTE: DominionOS's WASM sandbox (`wasm::Sandbox`) operates on its own typed
     /// [`Op`] instruction set, not raw binary `.wasm` bytes.  A real pipeline would
     /// feed fetched bytes through a decoder that converts binary WASM sections into
     /// `Vec<Op>`; that decoder is not yet implemented.  Until it exists, fetched

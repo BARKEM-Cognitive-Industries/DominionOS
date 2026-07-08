@@ -499,13 +499,17 @@ fn kv(s: &mut Vec<DrawCmd>, card: Rect, row: i32, key: &str, value: &str, t: &Th
     s.push(DrawCmd::Text { rect: Rect::new(card.x + 120, y, val_w, 14), text: toolkit::ellipsize_px(value, val_w, 12), color: t.text, size: 12 });
 }
 
-fn push_int(s: &mut String, mut n: i64) {
+fn push_int(s: &mut String, n: i64) {
     if n < 0 {
         s.push('-');
-        n = -n;
     }
+    // Format the magnitude as unsigned so `i64::MIN` (whose negation overflows) is total.
+    push_uint(s, n.unsigned_abs());
+}
+
+fn push_uint(s: &mut String, n: u64) {
     if n >= 10 {
-        push_int(s, n / 10);
+        push_uint(s, n / 10);
     }
     s.push((b'0' + (n % 10) as u8) as char);
 }

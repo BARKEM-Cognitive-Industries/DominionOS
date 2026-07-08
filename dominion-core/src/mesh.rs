@@ -654,82 +654,93 @@ pub fn decimate(mesh: &Mesh, target_tri_count: usize) -> Mesh {
     let mut positions: Vec<Vec3> = mesh.vertices.iter().map(|v| v.pos).collect();
     let mut indices: Vec<u32> = mesh.indices.clone();
 
-    // `remap[i]` follows the chain of collapses for vertex i.
-    let mut remap: Vec<u32> = (0..positions.len() as u32).collect();
-
-    /// Follow the remap chain to the canonical representative.
-    fn resolve(remap: &[u32], mut v: u32) -> u32 {
-        while remap[v as usize] != v {
-            v = remap[v as usize];
-        }
-        v
-    }
-
-    let mut current_tris = indices.len() / 3;
-
-    while current_tris > target_tri_count {
-        // Build a list of unique edges (avoiding duplicates via min/max ordering).
-        // We cap the candidate list to keep O(n) per step acceptable.
-        let mut best_len_sq = f32::MAX;
-        let mut best_a = u32::MAX;
-        let mut best_b = u32::MAX;
-
-        let tri_count = indices.len() / 3;
-        for t in 0..tri_count {
-            let ia = resolve(&remap, indices[t * 3]);
-            let ib = resolve(&remap, indices[t * 3 + 1]);
-            let ic = resolve(&remap, indices[t * 3 + 2]);
-
-            // Skip already-degenerate triangles.
-            if ia == ib || ib == ic || ia == ic {
-                continue;
-            }
-
-            // Check all three edges.
-            for &(ea, eb) in &[(ia, ib), (ib, ic), (ia, ic)] {
-                let d = positions[ea as usize] - positions[eb as usize];
-                let l2 = d.x * d.x + d.y * d.y + d.z * d.z;
-                if l2 < best_len_sq {
-                    best_len_sq = l2;
-                    best_a = ea;
-                    best_b = eb;
-                }
-            }
-        }
-
-        if best_a == u32::MAX {
-            // No collapable edges found.
+    // Greedy shortest-edge collapse, processed in vertex-disjoint batches.
+    //
+    // Each pass collects the current edges, sorts them shortest-first, and
+    // collapses as many *independent* (non-vertex-sharing) short edges as the
+    // remaining triangle budget allows, then compacts the index buffer once.
+    // Because every valid collapse removes at least one triangle and a pass
+    // collapses many edges before the single compaction, the whole routine is
+    // ~O(tris·log tris) per pass over a handful of passes — instead of the old
+    // O(tris²) that rescanned all triangles and rebuilt the index buffer for
+    // every single collapse.
+    loop {
+        let current_tris = indices.len() / 3;
+        if current_tris <= target_tri_count {
             break;
         }
 
-        // Merge best_b → best_a; move best_a to midpoint.
-        let mid = Vec3::new(
-            (positions[best_a as usize].x + positions[best_b as usize].x) * 0.5,
-            (positions[best_a as usize].y + positions[best_b as usize].y) * 0.5,
-            (positions[best_a as usize].z + positions[best_b as usize].z) * 0.5,
-        );
-        positions[best_a as usize] = mid;
-        remap[best_b as usize] = best_a;
+        // Collect candidate edges (canonical a<b) with squared length.
+        let mut edges: Vec<(f32, u32, u32)> = Vec::with_capacity(indices.len());
+        for t in 0..current_tris {
+            let tri = [indices[t * 3], indices[t * 3 + 1], indices[t * 3 + 2]];
+            for &(x, y) in &[(tri[0], tri[1]), (tri[1], tri[2]), (tri[0], tri[2])] {
+                if x == y {
+                    continue;
+                }
+                let (a, b) = if x < y { (x, y) } else { (y, x) };
+                let d = positions[a as usize] - positions[b as usize];
+                let l2 = d.x * d.x + d.y * d.y + d.z * d.z;
+                edges.push((l2, a, b));
+            }
+        }
+        if edges.is_empty() {
+            break;
+        }
+        // Shortest first (deterministic, NaN-tolerant ordering).
+        edges.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap_or(core::cmp::Ordering::Equal));
 
-        // Re-resolve the index buffer and count live triangles.
+        // Collapse vertex-disjoint edges shortest-first. Each collapse merges
+        // `b → a` at the midpoint. Locking both endpoints keeps the batch's
+        // collapses independent, so a single-level `remap` suffices. Cap the
+        // batch at the number of collapses still needed to reach the target
+        // (every collapse removes ≥1 triangle).
+        let mut remap: Vec<u32> = (0..positions.len() as u32).collect();
+        let mut locked = alloc::vec![false; positions.len()];
+        let budget = current_tris - target_tri_count;
+        let mut collapses = 0usize;
+        for &(_, a, b) in &edges {
+            if collapses >= budget {
+                break;
+            }
+            let (a, b) = (a as usize, b as usize);
+            if locked[a] || locked[b] {
+                continue;
+            }
+            positions[a] = Vec3::new(
+                (positions[a].x + positions[b].x) * 0.5,
+                (positions[a].y + positions[b].y) * 0.5,
+                (positions[a].z + positions[b].z) * 0.5,
+            );
+            remap[b] = a as u32;
+            locked[a] = true;
+            locked[b] = true;
+            collapses += 1;
+        }
+        if collapses == 0 {
+            break;
+        }
+
+        // Compact the index buffer once, applying the remap and dropping
+        // degenerate triangles.
         let mut new_indices: Vec<u32> = Vec::with_capacity(indices.len());
-        let tris = indices.len() / 3;
-        for t in 0..tris {
-            let ia = resolve(&remap, indices[t * 3]);
-            let ib = resolve(&remap, indices[t * 3 + 1]);
-            let ic = resolve(&remap, indices[t * 3 + 2]);
-
-            // Drop degenerate triangles.
+        for t in 0..current_tris {
+            let ia = remap[indices[t * 3] as usize];
+            let ib = remap[indices[t * 3 + 1] as usize];
+            let ic = remap[indices[t * 3 + 2] as usize];
             if ia == ib || ib == ic || ia == ic {
                 continue;
             }
-
             new_indices.push(ia);
             new_indices.push(ib);
             new_indices.push(ic);
         }
 
-        current_tris = new_indices.len() / 3;
+        // Defensive: if a pass somehow made no progress, stop rather than spin.
+        if new_indices.len() >= indices.len() {
+            indices = new_indices;
+            break;
+        }
         indices = new_indices;
     }
 

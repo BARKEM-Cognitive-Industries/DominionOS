@@ -55,6 +55,30 @@ impl RenderCapToken {
         }
     }
 
+    /// Mint a system-level capability whose `signed_hash` is a MAC binding
+    /// `(process_id, is_system)` to the compositor's `system_key`. Only a holder
+    /// of `system_key` can produce (or, via [`CapabilityRoutingGuard::verify_system_dialog`],
+    /// verify) such a token, so a user process cannot forge a genuine system dialog.
+    pub fn new_system_signed(process_id: u64, system_key: &Hash256) -> Self {
+        Self {
+            process_id,
+            signed_hash: Self::system_mac(process_id, system_key),
+            is_system: true,
+            can_read_other_surfaces: true,
+        }
+    }
+
+    /// MAC over `(process_id LE bytes ++ is_system marker ++ system_key)`. This
+    /// is the credential a legitimate system token carries; re-deriving it
+    /// requires the `system_key`.
+    fn system_mac(process_id: u64, system_key: &Hash256) -> Hash256 {
+        let mut buf = [0u8; 8 + 1 + 32];
+        buf[..8].copy_from_slice(&process_id.to_le_bytes());
+        buf[8] = 1; // is_system = true
+        buf[9..].copy_from_slice(&system_key.0);
+        Hash256::of(&buf)
+    }
+
     /// Self-verify: recomputing the hash from stored fields is not possible
     /// without the original key material, so we verify structural invariants:
     /// - A user token must never have `can_read_other_surfaces` set.
@@ -171,16 +195,14 @@ impl CapabilityRoutingGuard {
     }
 
     /// Check whether a node claiming to be a system dialog has valid system
-    /// credentials — i.e. its signed_hash was produced against the same key
-    /// material that underpins `system_key`.
+    /// credentials — i.e. its `signed_hash` is the MAC that
+    /// [`RenderCapToken::new_system_signed`] derives from `system_key`.
     ///
-    /// We verify by confirming the token is a system token, its hash is
-    /// non-zero, and the hash is consistent with the system key (implemented
-    /// as: the token's signed_hash combined with system_key equals the
-    /// combine of the token's signed_hash with system_key — which we use
-    /// simply to confirm both hashes are non-zero and the token is system).
-    /// A fake dialog from a user process will have `is_system = false` or a
-    /// `signed_hash` that does not match the system key chain.
+    /// We re-derive the expected MAC from the token's public `process_id` and
+    /// our `system_key`, then compare it against `token.signed_hash` in constant
+    /// time. A fake dialog from a user process has `is_system = false`, a zero
+    /// hash, or a `signed_hash` that was not minted under `system_key`, and so
+    /// is rejected.
     pub fn verify_system_dialog(&self, token: &RenderCapToken) -> bool {
         if !token.is_system {
             return false;
@@ -188,13 +210,19 @@ impl CapabilityRoutingGuard {
         if token.signed_hash == Hash256::ZERO {
             return false;
         }
-        // The system_key acts as a root-of-trust check: a legitimate system
-        // token's hash, when combined with the system_key, must not equal the
-        // zero hash (which would indicate either is zeroed). More concretely,
-        // we verify the combined hash is stable and non-trivial.
-        let combined = token.signed_hash.combine(&self.system_key);
-        combined != Hash256::ZERO
+        let expected = RenderCapToken::system_mac(token.process_id, &self.system_key);
+        ct_eq_hash(&token.signed_hash, &expected)
     }
+}
+
+/// Constant-time equality for two 256-bit hashes: folds every byte so the
+/// comparison does not short-circuit on the first mismatch.
+fn ct_eq_hash(a: &Hash256, b: &Hash256) -> bool {
+    let mut diff = 0u8;
+    for i in 0..32 {
+        diff |= a.0[i] ^ b.0[i];
+    }
+    diff == 0
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +269,9 @@ mod tests {
     }
 
     fn system_token() -> RenderCapToken {
-        RenderCapToken::new_system(1, b"system-key-material")
+        // Minted under the same system key the guard holds, so the guard can
+        // re-derive and verify its MAC.
+        RenderCapToken::new_system_signed(1, &system_key())
     }
 
     // --- token creation ---
@@ -405,19 +435,15 @@ mod tests {
     #[test]
     fn guard_verify_system_dialog_rejects_forged_system_flag() {
         let guard = CapabilityRoutingGuard::new(system_key());
-        // Forge: claim is_system = true but leave the hash as-computed for a
-        // user token. verify_system_dialog still only checks is_system flag +
-        // non-zero hash, but the user token itself would fail verify() in
-        // authorize_submit.
+        // Forge: take a user token and flip is_system on. Its signed_hash was
+        // derived from the user's own key material, not the system key, so the
+        // guard's MAC re-derivation does not match and the forged dialog is
+        // rejected (non-zero hash, so this exercises the constant-time compare).
         let mut forged = user_token();
         forged.is_system = true;
-        // verify() would catch can_read_other_surfaces=false with is_system=true
-        // but verify_system_dialog checks is_system directly.
-        // A forged user token with is_system set but signed_hash still valid
-        // actually passes verify_system_dialog — exactly as designed, because
-        // the guard's job is to check system_key, not re-derive the token.
-        // What matters: the token's signed_hash must differ from the real
-        // system key derivation. Let's test the zero-hash forged path.
+        assert_ne!(forged.signed_hash, Hash256::ZERO);
+        assert!(!guard.verify_system_dialog(&forged));
+        // A zeroed hash is likewise rejected.
         forged.signed_hash = Hash256::ZERO;
         assert!(!guard.verify_system_dialog(&forged));
     }

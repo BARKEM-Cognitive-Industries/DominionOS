@@ -161,7 +161,7 @@ pub struct CapturedFrame {
 
 impl CapturedFrame {
     pub fn new(width: u32, height: u32) -> Self {
-        let count = (width * height) as usize;
+        let count = width as usize * height as usize;
         Self {
             width,
             height,
@@ -173,14 +173,14 @@ impl CapturedFrame {
 
     #[inline]
     pub fn set_pixel(&mut self, x: u32, y: u32, color: u32, depth: f32) {
-        let idx = (y * self.width + x) as usize;
+        let idx = y as usize * self.width as usize + x as usize;
         self.pixels[idx] = color;
         self.depth[idx] = depth;
     }
 
     #[inline]
     pub fn get_pixel(&self, x: u32, y: u32) -> (u32, f32) {
-        let idx = (y * self.width + x) as usize;
+        let idx = y as usize * self.width as usize + x as usize;
         (self.pixels[idx], self.depth[idx])
     }
 }
@@ -238,7 +238,7 @@ impl Atw {
         fov_y_rad: f32,
         aspect: f32,
     ) -> Vec<u32> {
-        let count = (width * height) as usize;
+        let count = width as usize * height as usize;
         let mut out = alloc::vec![0u32; count];
 
         let frame = match &self.last_frame {

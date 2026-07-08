@@ -163,6 +163,9 @@ pub struct Credential {
     pub credential_id: Hash256,
     pub public_key: Hash256,
     pub last_counter: usize,
+    /// Whether any assertion has been accepted yet — so the very first counter value
+    /// (which may legitimately be 0) still gets rollback protection on subsequent replays.
+    seen: bool,
 }
 
 /// Why a WebAuthn assertion was rejected.
@@ -196,7 +199,7 @@ impl Passkey {
         seed.extend_from_slice(user_handle);
         let auth = Authenticator::new(&seed, height);
         let credential_id = Hash256::of(&[rp_id.as_bytes(), b"|cred|", user_handle].concat());
-        let cred = Credential { credential_id, public_key: auth.public_key(), last_counter: 0 };
+        let cred = Credential { credential_id, public_key: auth.public_key(), last_counter: 0, seen: false };
         (Passkey { rp_id: String::from(rp_id), auth, credential_id }, cred)
     }
 
@@ -232,12 +235,16 @@ impl Credential {
         if !verify_signature(self.public_key, &msg, sig) {
             return Err(AuthnError::BadSignature);
         }
-        // First assertion may equal 0; subsequent ones must strictly increase (a counter
-        // that fails to advance signals a cloned authenticator).
-        if self.last_counter != 0 && sig.counter <= self.last_counter {
+        // The first assertion may legitimately have counter 0; every assertion after the
+        // first must strictly increase (a counter that fails to advance signals a cloned
+        // authenticator). Tracking `seen` — rather than testing `last_counter != 0` — closes
+        // the window where a captured counter-0 assertion could be replayed indefinitely
+        // until some later counter finally advanced past 0.
+        if self.seen && sig.counter <= self.last_counter {
             return Err(AuthnError::CounterRollback);
         }
         self.last_counter = sig.counter;
+        self.seen = true;
         Ok(())
     }
 }
@@ -439,9 +446,13 @@ impl PasswordVault {
     /// read capability authorising that origin. A request for a *different* origin, or
     /// without the capability, yields nothing.
     pub fn autofill(&self, cap: &Capability, origin: &str) -> Result<(String, Vec<u8>), VaultError> {
-        let entry = self.entries.get(origin).ok_or(VaultError::NoEntry)?;
+        // Authorize first so existence (NoEntry vs. a stored credential) is only ever
+        // observable to a holder of the correct read capability — otherwise the pair of
+        // distinct errors is an oracle that lets an unauthorized page enumerate which
+        // origins have saved passwords.
         cap.check(Self::realm_addr(origin), 1, Rights::READ)
             .map_err(|_| VaultError::Unauthorized)?;
+        let entry = self.entries.get(origin).ok_or(VaultError::NoEntry)?;
         let secret = entry.sealed.open().ok_or(VaultError::NoEntry)?;
         Ok((entry.username.clone(), secret))
     }
@@ -534,7 +545,14 @@ mod tests {
         // A capability for a *different* origin cannot autofill this one (no phishing).
         let evil = PasswordVault::autofill_capability("phish.example");
         assert_eq!(vault.autofill(&evil, "bank.example"), Err(VaultError::Unauthorized));
-        // Unknown origin → nothing.
-        assert_eq!(vault.autofill(&cap, "unknown.example"), Err(VaultError::NoEntry));
+        // A caller lacking the capability for the queried origin gets the opaque
+        // `Unauthorized` — never `NoEntry` — so it cannot enumerate which origins have
+        // saved passwords. (Here `cap` is scoped to bank.example, so it does not
+        // authorize a lookup of unknown.example.)
+        assert_eq!(vault.autofill(&cap, "unknown.example"), Err(VaultError::Unauthorized));
+        // But a holder of the *correct* origin capability still learns its own absence:
+        // an authorized caller for a missing entry gets `NoEntry`.
+        let unknown_cap = PasswordVault::autofill_capability("unknown.example");
+        assert_eq!(vault.autofill(&unknown_cap, "unknown.example"), Err(VaultError::NoEntry));
     }
 }

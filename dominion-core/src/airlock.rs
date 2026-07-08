@@ -139,6 +139,16 @@ impl Airlock {
         input.push(to as u8);
         input.extend_from_slice(&granted.bits().to_le_bytes());
         input.extend_from_slice(&provenance.0);
+        // Include expires_at in the chain so an expiry cannot be silently
+        // altered (e.g. an expired temporal grant turned never-expiring) while
+        // the ledger still verifies. Tagged: presence byte + u64 when Some.
+        match expires_at {
+            Some(t) => {
+                input.push(1);
+                input.extend_from_slice(&t.to_le_bytes());
+            }
+            None => input.push(0),
+        }
         let chain = Hash256::of(&input);
         self.ledger.push(TransferRecord {
             seq,
@@ -192,6 +202,13 @@ impl Airlock {
             input.push(r.to as u8);
             input.extend_from_slice(&r.granted_rights.to_le_bytes());
             input.extend_from_slice(&r.provenance.0);
+            match r.expires_at {
+                Some(t) => {
+                    input.push(1);
+                    input.extend_from_slice(&t.to_le_bytes());
+                }
+                None => input.push(0),
+            }
             if Hash256::of(&input) != r.chain {
                 return false;
             }

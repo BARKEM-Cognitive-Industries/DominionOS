@@ -114,90 +114,252 @@ pub fn login_challenge(service: &str, nonce: &[u8]) -> Vec<u8> {
     c
 }
 
+// ─────────────────────────── hash-based Merkle OTS (mini-XMSS) ───────────────────────────
+//
+// The verifier stores ONLY a Merkle root over N one-time Lamport public keys. Each
+// login reveals one previously-unused leaf public key together with an
+// authentication path proving it is committed under the root, plus a Lamport
+// signature over the challenge made with that leaf's one-time secret. A breached
+// verifier holds no secret: it cannot substitute a leaf pubkey (that would break the
+// root's preimage/collision resistance) nor forge a leaf signature (no leaf secret).
+
+/// Domain-separated Merkle leaf hash of a one-time public key. Kept distinct from
+/// the internal-node hash (`Hash256::combine`) so leaf and node hashes never collide.
+fn merkle_leaf(pubkey: &[u8]) -> Hash256 {
+    let mut input = Vec::with_capacity(pubkey.len() + 5);
+    input.extend_from_slice(b"leaf:");
+    input.extend_from_slice(pubkey);
+    Hash256::of(&input)
+}
+
+/// Fold one level of a Merkle tree, duplicating the odd tail node (standard).
+fn merkle_fold(level: &[Hash256]) -> Vec<Hash256> {
+    let mut next = Vec::with_capacity(level.len().div_ceil(2));
+    let mut i = 0;
+    while i < level.len() {
+        let left = level[i];
+        let right = if i + 1 < level.len() { level[i + 1] } else { level[i] };
+        next.push(left.combine(&right));
+        i += 2;
+    }
+    next
+}
+
+/// The Merkle root over `leaves` (leaf hashes). Empty ⇒ `Hash256::ZERO`.
+fn merkle_root(leaves: &[Hash256]) -> Hash256 {
+    if leaves.is_empty() {
+        return Hash256::ZERO;
+    }
+    let mut level = leaves.to_vec();
+    while level.len() > 1 {
+        level = merkle_fold(&level);
+    }
+    level[0]
+}
+
+/// The authentication path (sibling hashes, bottom-up) for leaf `index`. Consistent
+/// with [`merkle_root`] and [`root_from_path`]: same leaf-hash domain, same
+/// left/right ordering, same odd-tail duplication.
+fn merkle_proof(leaves: &[Hash256], index: usize) -> Vec<Hash256> {
+    let mut proof = Vec::new();
+    let mut level = leaves.to_vec();
+    let mut idx = index;
+    while level.len() > 1 {
+        let sibling = if idx % 2 == 0 {
+            if idx + 1 < level.len() { level[idx + 1] } else { level[idx] }
+        } else {
+            level[idx - 1]
+        };
+        proof.push(sibling);
+        level = merkle_fold(&level);
+        idx /= 2;
+    }
+    proof
+}
+
+/// Recompute a Merkle root from `leaf` at `index` and its `path`. The parity of the
+/// running index at each level fixes the left/right order, matching [`merkle_proof`].
+fn root_from_path(leaf: Hash256, index: usize, path: &[Hash256]) -> Hash256 {
+    let mut node = leaf;
+    let mut idx = index;
+    for sibling in path {
+        node = if idx % 2 == 0 { node.combine(sibling) } else { sibling.combine(&node) };
+        idx /= 2;
+    }
+    node
+}
+
+/// Deterministically derive leaf `index`'s one-time-key seed: `H(signing_seed || i_le)`.
+fn leaf_seed(signing_seed: &[u8], index: u32) -> [u8; 32] {
+    let mut input = Vec::with_capacity(signing_seed.len() + 4);
+    input.extend_from_slice(signing_seed);
+    input.extend_from_slice(&index.to_le_bytes());
+    Hash256::of(&input).0
+}
+
+/// Compute the `n_leaves` Merkle leaf hashes from a signing seed (client-side helper,
+/// used to build both the published root and the per-login authentication path).
+fn leaf_hashes(
+    cal: &CryptoLayer,
+    algo: &str,
+    signing_seed: &[u8],
+    n_leaves: u32,
+) -> Option<Vec<Hash256>> {
+    let mut leaves = Vec::with_capacity(n_leaves as usize);
+    for i in 0..n_leaves {
+        let (_sk, pk) = cal.keygen(algo, &leaf_seed(signing_seed, i))?;
+        leaves.push(merkle_leaf(&pk));
+    }
+    Some(leaves)
+}
+
+/// The client's **revelation bundle** for one login: it opens exactly one unused
+/// one-time leaf. This is entirely public — capturing it lets an attacker replay
+/// nothing (the leaf index is burned after first use) and forge nothing (the leaf
+/// secret never leaves the client).
+pub struct AuthResponse {
+    /// Which one-time leaf this bundle opens.
+    pub index: u32,
+    /// The leaf's one-time Lamport public key.
+    pub one_time_pubkey: Vec<u8>,
+    /// Sibling hashes proving `one_time_pubkey` is committed under the account root.
+    pub auth_path: Vec<Hash256>,
+    /// Lamport signature over the challenge, made with the leaf's one-time secret.
+    pub signature: Vec<u8>,
+}
+
+impl AuthResponse {
+    /// Build the revelation bundle for leaf `index` on the client side. The caller
+    /// holds the [`DerivedIdentity`] used at registration; this regenerates leaf
+    /// `index`'s one-time keypair from the seed, rebuilds the tree to derive the
+    /// authentication path, and signs `challenge`. Uses the default leaf count that
+    /// [`Account::register`] publishes.
+    pub fn create(
+        cal: &CryptoLayer,
+        algo: &str,
+        ident: &DerivedIdentity,
+        index: u32,
+        challenge: &[u8],
+    ) -> Option<AuthResponse> {
+        Self::create_with_leaves(cal, algo, ident, index, challenge, Account::DEFAULT_LEAVES)
+    }
+
+    /// As [`AuthResponse::create`], but for an account registered with an explicit
+    /// `n_leaves` (must match [`Account::register_with_leaves`]).
+    pub fn create_with_leaves(
+        cal: &CryptoLayer,
+        algo: &str,
+        ident: &DerivedIdentity,
+        index: u32,
+        challenge: &[u8],
+        n_leaves: u32,
+    ) -> Option<AuthResponse> {
+        if index >= n_leaves {
+            return None;
+        }
+        let (sk, pk) = cal.keygen(algo, &leaf_seed(ident.signing_seed(), index))?;
+        let leaves = leaf_hashes(cal, algo, ident.signing_seed(), n_leaves)?;
+        let auth_path = merkle_proof(&leaves, index as usize);
+        let signature = cal.sign(algo, &sk, challenge)?;
+        Some(AuthResponse { index, one_time_pubkey: pk, auth_path, signature })
+    }
+}
+
 /// A registered account: a service's record of one of the user's **per-service**
-/// identities. The service stores the **signing seed** (not a fixed public key) so
-/// that each login challenge can derive a fresh, unique Lamport keypair — preventing
-/// the one-time-signature key-reuse attack that would result from verifying multiple
-/// challenges against the same stored public key.
-///
-/// Per-challenge key derivation: `keygen(H(signing_seed || challenge))`.  Each
-/// challenge therefore gets its own independent Lamport keypair, so no two
-/// signatures ever share preimage material.
+/// identities. The service stores **only public data** — a Merkle root committing to
+/// N one-time public keys, the leaf count, and the set of already-consumed leaves.
+/// There is **no secret** here: a breached or malicious verifier cannot impersonate
+/// the user, because forging a login would require either inverting the root
+/// (to substitute a leaf pubkey) or a leaf's one-time secret (which lives only on the
+/// client). Each leaf is a Lamport one-time key, so the `used` set enforces
+/// single-use and rejects replay of any captured [`AuthResponse`].
 pub struct Account {
     pub service: String,
     pub identity: DominionId,
-    /// The seed from which per-challenge keypairs are derived on demand.
-    /// Never exposed to the verifier beyond this struct.
-    signing_seed: Vec<u8>,
     pub algo: String,
+    /// Public commitment to the N one-time public keys. The ONLY authentication
+    /// material stored verifier-side — public, non-secret.
+    pub merkle_root: Hash256,
+    /// Number of one-time leaves committed under `merkle_root`.
+    pub n_leaves: u32,
+    /// Consumed leaf indices — enforces one-time use and rejects replay. Private so
+    /// verification is the only path that can mark a leaf spent.
+    used: Vec<u32>,
 }
 
 impl Account {
-    /// Register a per-service identity with a service.  The account records the
-    /// signing seed; no keypair is generated at registration time because the
-    /// actual keypair is derived fresh for every challenge.
+    /// Default number of one-time leaves published at registration. Each leaf is one
+    /// passwordless login; re-registration (a fresh root) is needed once exhausted.
+    pub const DEFAULT_LEAVES: u32 = 16;
+
+    /// Register a per-service identity with a service. The client derives
+    /// [`Account::DEFAULT_LEAVES`] one-time keypairs from the identity seed, builds a
+    /// Merkle tree over their public keys, and publishes ONLY the root.
     pub fn register(
-        _cal: &CryptoLayer,
+        cal: &CryptoLayer,
         algo: &str,
         service: &str,
         ident: &DerivedIdentity,
     ) -> Option<Account> {
+        Self::register_with_leaves(cal, algo, service, ident, Self::DEFAULT_LEAVES)
+    }
+
+    /// As [`Account::register`], but with an explicit leaf count (used by tests to
+    /// keep N small). The client keeps the seed; the service gets only the root.
+    pub fn register_with_leaves(
+        cal: &CryptoLayer,
+        algo: &str,
+        service: &str,
+        ident: &DerivedIdentity,
+        n_leaves: u32,
+    ) -> Option<Account> {
+        if n_leaves == 0 {
+            return None;
+        }
+        let leaves = leaf_hashes(cal, algo, ident.signing_seed(), n_leaves)?;
         Some(Account {
             service: String::from(service),
             identity: ident.id,
-            signing_seed: ident.signing_seed().to_vec(),
             algo: String::from(algo),
+            merkle_root: merkle_root(&leaves),
+            n_leaves,
+            used: Vec::new(),
         })
     }
 
-    /// Derive the per-challenge signing seed: `H(signing_seed || challenge)`.
-    /// This produces a unique 32-byte seed for every distinct challenge, ensuring
-    /// every Lamport keypair is used at most once.
-    fn per_challenge_seed(&self, challenge: &[u8]) -> [u8; 32] {
-        let mut input = Vec::with_capacity(self.signing_seed.len() + challenge.len());
-        input.extend_from_slice(&self.signing_seed);
-        input.extend_from_slice(challenge);
-        Hash256::of(&input).0
+    /// How many one-time leaves have been consumed so far.
+    pub fn used_count(&self) -> usize {
+        self.used.len()
     }
 
-    /// Derive the per-challenge public key for `challenge`.  The client calls
-    /// [`Account::sign_challenge`] (or derives the same seed themselves) to
-    /// produce the matching signature.
-    pub fn per_challenge_pubkey(&self, cal: &CryptoLayer, challenge: &[u8]) -> Option<Vec<u8>> {
-        let seed = self.per_challenge_seed(challenge);
-        let (_sk, pk) = cal.keygen(&self.algo, &seed)?;
-        Some(pk)
-    }
-
-    /// Sign a challenge on the client side.  The caller holds the same
-    /// [`DerivedIdentity`] that was used during [`Account::register`]; this
-    /// derives the matching per-challenge secret and produces a signature that
-    /// [`Account::verify_login`] will accept.
-    pub fn sign_challenge(
+    /// Passwordless login against a revelation bundle. Checks, in order:
+    /// (a) `response.index` is in range and NOT already used (rejects one-time-key
+    /// reuse / replay of a captured bundle); (b) the one-time pubkey + auth path
+    /// recompute the stored `merkle_root` (leaf membership); (c) the Lamport
+    /// signature verifies over `challenge`. Only if all pass is the leaf marked
+    /// spent and `true` returned. Any failure returns `false` and consumes nothing.
+    pub fn verify_login(
+        &mut self,
         cal: &CryptoLayer,
-        algo: &str,
-        ident: &DerivedIdentity,
         challenge: &[u8],
-    ) -> Option<Vec<u8>> {
-        let mut input = Vec::with_capacity(ident.signing_seed().len() + challenge.len());
-        input.extend_from_slice(ident.signing_seed());
-        input.extend_from_slice(challenge);
-        let per_challenge_seed = Hash256::of(&input).0;
-        let (sk, _pk) = cal.keygen(algo, &per_challenge_seed)?;
-        cal.sign(algo, &sk, challenge)
-    }
-
-    /// Passwordless login: derive a fresh Lamport keypair for this specific
-    /// `challenge` and verify `signature` against it.  Because the keypair is
-    /// unique per challenge, signing two different challenges never reuses
-    /// preimage material — the Lamport OTS guarantee holds unconditionally.
-    pub fn verify_login(&self, cal: &CryptoLayer, challenge: &[u8], signature: &[u8]) -> bool {
-        let seed = self.per_challenge_seed(challenge);
-        let pk = match cal.keygen(&self.algo, &seed) {
-            Some((_sk, pk)) => pk,
-            None => return false,
-        };
-        cal.verify(&self.algo, &pk, challenge, signature)
+        response: &AuthResponse,
+    ) -> bool {
+        // (a) range + one-time-use / replay check.
+        if response.index >= self.n_leaves || self.used.contains(&response.index) {
+            return false;
+        }
+        // (b) Merkle membership of the revealed one-time public key.
+        let leaf = merkle_leaf(&response.one_time_pubkey);
+        if root_from_path(leaf, response.index as usize, &response.auth_path) != self.merkle_root {
+            return false;
+        }
+        // (c) one-time Lamport signature over the challenge.
+        if !cal.verify(&self.algo, &response.one_time_pubkey, challenge, &response.signature) {
+            return false;
+        }
+        // All checks passed — burn the leaf so it can never be replayed.
+        self.used.push(response.index);
+        true
     }
 }
 
@@ -302,44 +464,134 @@ mod tests {
     }
 
     #[test]
-    fn passwordless_login_verifies_a_signed_challenge() {
+    fn passwordless_login_with_merkle_ots_succeeds() {
+        // Honest full login: the client opens the next unused leaf and the verifier,
+        // holding only the Merkle root, accepts it.
         let cal = CryptoLayer::with_defaults();
         let seed = MasterSeed::from_entropy(b"seed");
         let ident = seed.service_identity("app.example");
-        // register() no longer returns an sk — the keypair is derived per challenge.
-        let account = Account::register(&cal, "lamport-pq", "app.example", &ident).unwrap();
+        let mut account =
+            Account::register_with_leaves(&cal, "lamport-pq", "app.example", &ident, 4).unwrap();
 
         let challenge = login_challenge("app.example", b"server-nonce-1");
-        // Client derives the per-challenge signing key using the same ident.
-        let sig = Account::sign_challenge(&cal, "lamport-pq", &ident, &challenge).unwrap();
-        assert!(account.verify_login(&cal, &challenge, &sig));
-        // A signature produced for one challenge is rejected when replayed against another.
-        let other = login_challenge("app.example", b"different-nonce");
-        assert!(!account.verify_login(&cal, &other, &sig));
+        let resp =
+            AuthResponse::create_with_leaves(&cal, "lamport-pq", &ident, 0, &challenge, 4).unwrap();
+        assert!(account.verify_login(&cal, &challenge, &resp));
+        assert_eq!(account.used_count(), 1);
     }
 
     #[test]
-    fn each_challenge_uses_a_distinct_keypair() {
-        // Core security property: two different challenges must derive two different
-        // public keys so that signing both never reuses a Lamport key.
+    fn distinct_leaves_serve_successive_logins() {
+        // Each login consumes a distinct one-time leaf; two logins on two leaves both
+        // succeed and both are recorded as spent.
         let cal = CryptoLayer::with_defaults();
         let seed = MasterSeed::from_entropy(b"seed");
         let ident = seed.service_identity("app.example");
-        let account = Account::register(&cal, "lamport-pq", "app.example", &ident).unwrap();
+        let mut account =
+            Account::register_with_leaves(&cal, "lamport-pq", "app.example", &ident, 4).unwrap();
 
         let c1 = login_challenge("app.example", b"nonce-1");
         let c2 = login_challenge("app.example", b"nonce-2");
-        let pk1 = account.per_challenge_pubkey(&cal, &c1).unwrap();
-        let pk2 = account.per_challenge_pubkey(&cal, &c2).unwrap();
-        // Different challenges → different OTS keypairs.
-        assert_ne!(pk1, pk2);
-        // Each sig verifies only against its own challenge.
-        let sig1 = Account::sign_challenge(&cal, "lamport-pq", &ident, &c1).unwrap();
-        let sig2 = Account::sign_challenge(&cal, "lamport-pq", &ident, &c2).unwrap();
-        assert!(account.verify_login(&cal, &c1, &sig1));
-        assert!(account.verify_login(&cal, &c2, &sig2));
-        assert!(!account.verify_login(&cal, &c1, &sig2));
-        assert!(!account.verify_login(&cal, &c2, &sig1));
+        let r1 = AuthResponse::create_with_leaves(&cal, "lamport-pq", &ident, 0, &c1, 4).unwrap();
+        let r2 = AuthResponse::create_with_leaves(&cal, "lamport-pq", &ident, 1, &c2, 4).unwrap();
+        // Distinct leaves ⇒ distinct one-time public keys.
+        assert_ne!(r1.one_time_pubkey, r2.one_time_pubkey);
+        assert!(account.verify_login(&cal, &c1, &r1));
+        assert!(account.verify_login(&cal, &c2, &r2));
+        assert_eq!(account.used_count(), 2);
+    }
+
+    #[test]
+    fn replaying_a_used_leaf_bundle_is_rejected() {
+        // Replay of a captured bundle (same leaf) must be rejected: the leaf is burned
+        // on first use, and no further use of it is possible — for any challenge.
+        let cal = CryptoLayer::with_defaults();
+        let seed = MasterSeed::from_entropy(b"seed");
+        let ident = seed.service_identity("app.example");
+        let mut account =
+            Account::register_with_leaves(&cal, "lamport-pq", "app.example", &ident, 4).unwrap();
+
+        let challenge = login_challenge("app.example", b"nonce");
+        let resp =
+            AuthResponse::create_with_leaves(&cal, "lamport-pq", &ident, 0, &challenge, 4).unwrap();
+        assert!(account.verify_login(&cal, &challenge, &resp));
+        // Second use of the very same bundle: leaf 0 already spent ⇒ rejected.
+        assert!(!account.verify_login(&cal, &challenge, &resp));
+        // Even re-deriving a fresh signature for the same leaf index is rejected.
+        let replay =
+            AuthResponse::create_with_leaves(&cal, "lamport-pq", &ident, 0, &challenge, 4).unwrap();
+        assert!(!account.verify_login(&cal, &challenge, &replay));
+        assert_eq!(account.used_count(), 1); // only the first login consumed a leaf
+    }
+
+    #[test]
+    fn forged_leaf_or_wrong_path_fails_membership() {
+        // A bundle whose one-time pubkey (or auth path) is not the committed leaf must
+        // fail the Merkle membership check against the stored root.
+        let cal = CryptoLayer::with_defaults();
+        let seed = MasterSeed::from_entropy(b"seed");
+        let ident = seed.service_identity("app.example");
+        let mut account =
+            Account::register_with_leaves(&cal, "lamport-pq", "app.example", &ident, 4).unwrap();
+
+        let challenge = login_challenge("app.example", b"nonce");
+
+        // Forge a one-time keypair the account never committed to, but present it at a
+        // valid index with a well-formed (but wrong-tree) auth path.
+        let attacker = MasterSeed::from_entropy(b"attacker").service_identity("app.example");
+        let mut forged =
+            AuthResponse::create_with_leaves(&cal, "lamport-pq", &attacker, 0, &challenge, 4)
+                .unwrap();
+        forged.index = 0;
+        assert!(
+            !account.verify_login(&cal, &challenge, &forged),
+            "verify_login accepted a leaf pubkey not committed under the root"
+        );
+
+        // A legitimate leaf with a tampered auth path also fails membership.
+        let mut bad_path =
+            AuthResponse::create_with_leaves(&cal, "lamport-pq", &ident, 0, &challenge, 4).unwrap();
+        if let Some(first) = bad_path.auth_path.first_mut() {
+            *first = Hash256::of(b"not the real sibling");
+        }
+        assert!(!account.verify_login(&cal, &challenge, &bad_path));
+        // No failed attempt consumed a leaf.
+        assert_eq!(account.used_count(), 0);
+    }
+
+    #[test]
+    fn breached_verifier_has_no_secret_to_forge_with() {
+        // Security property: the stored Account is PUBLIC data only. There is no seed
+        // accessor (this would not compile: `account.signing_seed()`), and the fields
+        // an attacker can read — root, leaf count, used set — cannot produce a valid
+        // login without the client's identity seed.
+        let cal = CryptoLayer::with_defaults();
+        let seed = MasterSeed::from_entropy(b"victim-seed");
+        let ident = seed.service_identity("bank.example");
+        let mut account =
+            Account::register_with_leaves(&cal, "lamport-pq", "bank.example", &ident, 4).unwrap();
+
+        // Everything the breached verifier holds is public and non-secret.
+        let _public_root: Hash256 = account.merkle_root;
+        let _public_n: u32 = account.n_leaves;
+
+        // With only the public root, an attacker cannot construct any AuthResponse that
+        // verifies against a fresh challenge — they lack the leaf secrets. Best they can
+        // do is guess; a zero/garbage bundle is rejected on membership and signature.
+        let challenge = login_challenge("bank.example", b"fresh-challenge");
+        let garbage = AuthResponse {
+            index: 0,
+            one_time_pubkey: alloc::vec![0u8; 256 * 2 * 32],
+            auth_path: alloc::vec![Hash256::ZERO; 2],
+            signature: alloc::vec![0u8; 256 * 32],
+        };
+        assert!(!account.verify_login(&cal, &challenge, &garbage));
+
+        // The legitimate client, holding the seed, still logs in — proving the account
+        // is usable, just not forgeable from its stored (public) contents.
+        let resp =
+            AuthResponse::create_with_leaves(&cal, "lamport-pq", &ident, 0, &challenge, 4).unwrap();
+        assert!(account.verify_login(&cal, &challenge, &resp));
     }
 
     #[test]
@@ -368,39 +620,26 @@ mod tests {
     }
 
     #[test]
-    fn forged_login_with_wrong_challenge_key_is_rejected() {
-        // Security property: a signature produced by signing challenge_A with the
-        // keypair derived for challenge_B must be rejected by verify_login(challenge_A).
-        // This catches any implementation that derives the same keypair regardless of
-        // the challenge or that mixes up which challenge was passed to keygen.
+    fn signature_over_wrong_challenge_is_rejected() {
+        // The revealed leaf is committed under the root, but its signature was made
+        // over a different challenge — verify_login must reject (signature check).
         let cal = CryptoLayer::with_defaults();
         let seed = MasterSeed::from_entropy(b"forge-test-seed");
         let ident = seed.service_identity("target.example");
-        let account = Account::register(&cal, "lamport-pq", "target.example", &ident).unwrap();
+        let mut account =
+            Account::register_with_leaves(&cal, "lamport-pq", "target.example", &ident, 4).unwrap();
 
         let challenge_a = login_challenge("target.example", b"nonce-alpha");
         let challenge_b = login_challenge("target.example", b"nonce-beta");
 
-        // Attacker signs challenge_A but using the keypair derived for challenge_B.
-        // Concretely: we sign challenge_A but pass challenge_B to sign_challenge so
-        // that the wrong per-challenge seed is used.
-        let wrong_sig = {
-            // Derive the per-challenge seed for B, then sign challenge_A with it.
-            use crate::hash::Hash256;
-            let mut input = Vec::new();
-            input.extend_from_slice(ident.signing_seed());
-            input.extend_from_slice(&challenge_b);
-            let seed_b = Hash256::of(&input).0;
-            let (sk_b, _pk_b) = cal.keygen("lamport-pq", &seed_b).unwrap();
-            cal.sign("lamport-pq", &sk_b, &challenge_a).unwrap()
-        };
-
-        // verify_login derives the keypair for challenge_A — the public key will not
-        // match sk_b, so the forged signature must be rejected.
+        // Bundle for leaf 0 signs challenge_B, but is presented against challenge_A.
+        let resp =
+            AuthResponse::create_with_leaves(&cal, "lamport-pq", &ident, 0, &challenge_b, 4).unwrap();
         assert!(
-            !account.verify_login(&cal, &challenge_a, &wrong_sig),
-            "verify_login accepted a signature produced with the wrong per-challenge key"
+            !account.verify_login(&cal, &challenge_a, &resp),
+            "verify_login accepted a signature made over the wrong challenge"
         );
+        assert_eq!(account.used_count(), 0);
     }
 
     #[test]

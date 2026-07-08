@@ -172,6 +172,7 @@ impl Scheduler {
     pub fn finish(&mut self, id: DomainId) {
         if let Some(i) = self.index(id) {
             self.domains[i].state = DomainState::Finished;
+            self.run_queue.retain(|q| *q != id);
         }
     }
 

@@ -1,6 +1,6 @@
-//! The **Aether** language — DominionOS's sole execution-modelling language.
+//! The **Dominion** language — DominionOS's sole execution-modelling language.
 //!
-//! Aether is intralingual (§5): the same syntax expresses a microkernel cell and
+//! Dominion is intralingual (§5): the same syntax expresses a microkernel cell and
 //! a user-facing pipeline; the only difference is the capability token the
 //! runtime injects. This module assembles the full pipeline:
 //!
@@ -29,7 +29,7 @@ pub use value::Value;
 use alloc::string::String;
 use alloc::format;
 
-/// Convenience front door: evaluate Aether source in a fresh, fully-privileged
+/// Convenience front door: evaluate Dominion source in a fresh, fully-privileged
 /// interpreter and return the final value. Used by the terminal's `dominion`
 /// command and the one-liner REPL.
 pub fn eval_source(src: &str) -> Result<Value, String> {

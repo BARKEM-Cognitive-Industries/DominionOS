@@ -1,4 +1,4 @@
-//! Recursive-descent parser for Aether: tokens → [`Program`].
+//! Recursive-descent parser for Dominion: tokens → [`Program`].
 //!
 //! Operator precedence, low → high:
 //!   `=>` (parallel map) · `== !=` · `< > <= >=` · `+ -` · `* / %` · unary `-`

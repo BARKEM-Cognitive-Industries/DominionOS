@@ -104,9 +104,16 @@ impl ZeroCopyPool {
     /// Model an IPC handle-pass: record that another consumer received this
     /// handle (not a byte copy) and return the cloned handle.
     ///
+    /// The new consumer now holds a live reference, so the refcount is bumped
+    /// (as [`retain`](Self::retain) would): the buffer is only freed once every
+    /// consumer has released its handle.
+    ///
     /// Returns `None` if the handle does not exist in the pool.
     pub fn pass_handle(&mut self, handle: ZeroCopyHandle) -> Option<ZeroCopyHandle> {
         if self.buffers.contains_key(&handle.0) {
+            if let Some(rc) = self.refcounts.get_mut(&handle.0) {
+                *rc += 1;
+            }
             self.stats.total_handle_passes += 1;
             self.stats.copies_eliminated += 1;
             Some(handle)
@@ -258,6 +265,10 @@ pub fn benchmark_zero_copy(
     unique_payloads: usize,
 ) -> ZcoBenchResult {
     let mut pipeline = ZcpPipeline::new(consumers);
+
+    // Guard the divisor: a caller passing 0 distinct payloads would otherwise
+    // divide by zero below. At least one unique payload is always assumed.
+    let unique_payloads = unique_payloads.max(1);
 
     for _p in 0..producers {
         for m in 0..messages {

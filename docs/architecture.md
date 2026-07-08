@@ -1,10 +1,10 @@
-# AetherOS / DominionOS Architecture
+# DominionOS Architecture
 
 **Status: Authoritative** (derived from codebase + spec consolidation, 2026-06-22)
 
 ## Overview
 
-AetherOS is a capability-based microkernel OS with an object-centric runtime (Dominion language), unified 2D/3D rendering, and on-device AI. The system is built in 17 major subsystems spanning firmware boot (Stage 0), a formally-aspirational microkernel (Stage 1), capability security (Stage 2–3), and 10 stages of progressively sophisticated features (deterministic state, active defense, distributed networking, semantic audio, AI-native UI, etc.).
+DominionOS is a capability-based microkernel OS with an object-centric runtime (Dominion language), unified 2D/3D rendering, and on-device AI. The system is built in 17 major subsystems spanning firmware boot (Stage 0), a formally-aspirational microkernel (Stage 1), capability security (Stage 2–3), and 10 stages of progressively sophisticated features (deterministic state, active defense, distributed networking, semantic audio, AI-native UI, etc.).
 
 **Core Primitives:**
 1. **Capabilities** — Unforgeable authority tokens with provenance chains, spatial bounds, and monotonic delegation
@@ -31,10 +31,10 @@ AetherOS is a capability-based microkernel OS with an object-centric runtime (Do
 - **Status: SHIPPED** but lacks formal verification; driver isolation incomplete
 
 **Device & Driver Management** (Stages 0–1 I/O)
-- Hardware abstraction: class drivers (NVMe, AHCI, xHCI, HD-Audio, virtio block/net, PS/2)
+- Hardware abstraction: storage (virtio-blk, AHCI, NVMe, USB Mass Storage), network (virtio-net, Intel e1000/e1000e, RTL8139), USB (xHCI + HID), input (PS/2 keyboard/mouse), plus PCI enumeration, ACPI, SMP, RTC, serial
 - Five-layer driver synthesis: (L1) class templates → (L2) enumerate & bind → (L3) declarative specs → (L4) safe foreign-driver reuse (.sys / .ko confinement) → (L5) AI-drafted specs
 - Deterministic device models for pre-boot validation
-- **Status: SHIPPED** (L1–L3 complete, L4 binary-parsing partial, L5 unimplemented, L2 PCI/USB enumeration hand-constructed)
+- **Status: SHIPPED** (drivers tested primarily in QEMU; L4 binary-parsing partial, L5 unimplemented, L2 PCI/USB enumeration hand-constructed)
 
 ### Layer 2: Memory, Storage & Persistence (Stage 5–6)
 
@@ -81,8 +81,8 @@ AetherOS is a capability-based microkernel OS with an object-centric runtime (Do
 - Tor integration: bootstrap gating (enabled + circuit-down → blocked, no leak; enabled + up → routed)
 - DOM, event binding, script execution
 - DominionWeb declarative page DSL (no ambient JS authority)
-- **Gap**: Terminal input routing missing; Tor SOCKS kernel integration incomplete; real HTTP transport in kernel
-- **Status: SHIPPED** (core rendering complete, REPL interactivity pending)
+- **Gap**: Tor SOCKS kernel integration incomplete; real HTTP transport in kernel
+- **Status: SHIPPED** (core rendering complete; terminal REPL interactive)
 
 ### Layer 5: Computing & Rendering (Stages 8–10)
 
@@ -99,8 +99,8 @@ AetherOS is a capability-based microkernel OS with an object-centric runtime (Do
 - Persistent taskbar (Start + pinned apps + system tray), desktop icons
 - Composable UI: movable/resizable/removable panels, edit-mode toggle, global widget library
 - Accessibility tree (WCAG), live metrics (clock/CPU gauge)
-- **Gap**: Terminal input routing not wired to shell; shell/workspace architecture fragmented; desktop cards vs. icons mismatch in spec; composability incomplete (widgets only on Desktop)
-- **Status: SHIPPED** (single-user demo complete, multi-app workflows partial)
+- **Gap**: shell/workspace architecture fragmented; desktop cards vs. icons mismatch in spec; composability incomplete (widgets only on Desktop)
+- **Status: SHIPPED** (single-user demo complete with interactive terminal; multi-app workflows partial)
 
 ### Layer 6: Language & AI (Stages 3–9)
 
@@ -151,7 +151,7 @@ AetherOS is a capability-based microkernel OS with an object-centric runtime (Do
 | **Formal verification vs. pragmatism** | Microkernel formally proven correct | Rust kernel with unsafe, no proofs | Graceful degradation: software tags work; formal proofs deferred to later phase with clear TCB documentation |
 | **Capability enforcement at scale** | CHERI hardware enforcement guaranteed | Software MAC-backed, CHERI degrade path | Tier system: Tier 2 (CHERI/formal) > Tier 1 (MTE/PAC) > Tier 0 (software); per-domain admission gates on tier strength |
 | **Generative storage (ML) as default** | Stage 5: all compression via neural codecs | Codec stubs only; raw byte storage | Deferred: architecture supports codecs; implementation staged for later release |
-| **Terminal as REPL** | Interactive shell with history/autocomplete | Terminal renders but input routing incomplete | Partial: backend trait supports Dominion REPL; UI wiring pending (small fix) |
+| **Terminal as REPL** | Interactive shell with history/autocomplete | Interactive terminal wired (ASH shell + GUI desktop terminal) | Done: input routing works and is test-covered; history/autocomplete still expanding |
 | **Distributed safety vs. single-node TCB** | Firewall spans network, signed capability edges | In-memory single-node firewall | Deferred: RPC/peer validation layer not yet built; single-node TCB sound |
 | **AI domains confined by default** | Airlock enforces no-infra/no-storage-write | Policy exists; enforcement integration unclear | Enforced: Transfer policies + domain admission gate ensure confinement; audit/test coverage expanding |
 
@@ -176,7 +176,6 @@ AetherOS is a capability-based microkernel OS with an object-centric runtime (Do
 - **Hardware memory encryption**: Tiers A/B abstracted but not wired (kernel integration deferred)
 - **Generative storage**: Neural codec pipeline not built (architecture in place)
 - **AI threat detection**: Statistical baselines only (ML models for graph/scheduling anomalies pending)
-- **Terminal interactivity**: Shell input routing incomplete (small wiring gap)
 - **Distributed firewall**: Single-node only (RPC/peer validation deferred)
 - **Driver isolation**: Virtio/AHCI/PS/2 in kernel (user-space sandboxed drivers deferred)
 

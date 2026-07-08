@@ -296,7 +296,16 @@ impl Scene {
     }
 
     /// Attach `child` under `parent`. Detaches from any previous parent first.
+    ///
+    /// Refuses (no-op) if the link would create a parent/child cycle — i.e. `child`
+    /// is `parent` itself or an ancestor of `parent`. Without this guard a caller could
+    /// `attach(a,b)` then `attach(b,a)`, and [`world_transform`](Self::world_transform)
+    /// would walk the parent chain forever (unbounded `Vec` growth until the allocator
+    /// aborts). The check keeps the node graph acyclic by construction.
     pub fn attach(&mut self, child: NodeId, parent: NodeId) {
+        if self.would_cycle(child, parent) {
+            return;
+        }
         self.detach(child);
         if let Some(node) = self.nodes.get_mut(&child) {
             node.parent = Some(parent);
@@ -306,6 +315,20 @@ impl Scene {
                 p.children.push(child);
             }
         }
+    }
+
+    /// Would attaching `child` under `parent` create a cycle? True iff `child` equals
+    /// `parent` or is already an ancestor of `parent`. Walks the (acyclic by invariant)
+    /// parent chain of `parent`, so it always terminates.
+    fn would_cycle(&self, child: NodeId, parent: NodeId) -> bool {
+        let mut current = Some(parent);
+        while let Some(cur) = current {
+            if cur == child {
+                return true;
+            }
+            current = self.nodes.get(&cur).and_then(|n| n.parent);
+        }
+        false
     }
 
     /// Remove `child` from its current parent (making it a root node).
@@ -402,6 +425,12 @@ impl Scene {
         let mut current = id;
         loop {
             chain.push(current);
+            // Defensive depth cap: an acyclic chain can never exceed the node count.
+            // attach() already forbids cycles, so this is belt-and-suspenders against
+            // an unbounded walk (OOM) should the invariant ever be violated.
+            if chain.len() > self.nodes.len() {
+                break;
+            }
             match self.nodes.get(&current).and_then(|n| n.parent) {
                 Some(pid) => current = pid,
                 None => break,

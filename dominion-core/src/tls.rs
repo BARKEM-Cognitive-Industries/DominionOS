@@ -33,6 +33,10 @@ pub enum TlsError {
     UntrustedChain,
     NameMismatch,
     Expired,
+    /// The peer's key share is a low-order point: the X25519 shared secret came
+    /// out all-zero (RFC 7748 §6.1), so the handshake is aborted rather than
+    /// continuing with an attacker-forced constant secret.
+    WeakPublicKey,
 }
 
 /// The raw byte transport the handshake runs over (typically a TCP socket).
@@ -318,7 +322,8 @@ pub fn connect<I: Io>(
     };
 
     // --- Key schedule: handshake secrets ---
-    let shared = cr::x25519(&x_priv, &server_pub);
+    // RFC 7748 §6.1: reject a low-order peer key that forces an all-zero secret.
+    let shared = cr::x25519_checked(&x_priv, &server_pub).ok_or(TlsError::WeakPublicKey)?;
     let early = cr::hkdf_extract(&[0u8; 32], &[0u8; 32]);
     let empty_hash = sha256(b"");
     let derived = cr::derive_secret(&early, "derived", &empty_hash);
@@ -776,7 +781,10 @@ fn parse_certificate_verify(body: &[u8]) -> Result<(SigAlg, Vec<u8>), TlsError> 
         SIG_ECDSA_P256_SHA256 => SigAlg::EcdsaP256Sha256,
         SIG_ECDSA_P384_SHA384 => SigAlg::EcdsaP384Sha384,
         SIG_RSA_PSS_RSAE_SHA256 => SigAlg::RsaPssSha256,
-        SIG_RSA_PKCS1_SHA256 => SigAlg::RsaPkcs1Sha256,
+        // RFC 8446 §4.4.3: rsa_pkcs1_* code points are permitted only for
+        // legacy certificate signatures, never for the CertificateVerify
+        // handshake signature (which must use RSASSA-PSS). Reject them here.
+        SIG_RSA_PKCS1_SHA256 => return Err(TlsError::BadSignature),
         _ => return Err(TlsError::BadSignature),
     };
     Ok((alg, sig))
@@ -876,6 +884,49 @@ mod tests {
         assert!(ch.windows(needle.len()).any(|w| w == needle));
     }
 
+    // ---- RFC 7748 §6.1: reject a low-order peer key share ----
+    #[test]
+    fn x25519_checked_rejects_low_order_point() {
+        // The all-zero point is the canonical low-order point: any scalar
+        // multiplied by it yields an all-zero shared secret.
+        let scalar = [0x11u8; 32];
+        assert!(cr::x25519_checked(&scalar, &[0u8; 32]).is_none());
+        // A genuine peer public key still agrees to a non-zero secret.
+        let peer_pub = cr::x25519_base(&[0x5au8; 32]);
+        let ok = cr::x25519_checked(&scalar, &peer_pub).expect("normal agreement is Some");
+        assert_ne!(ok, [0u8; 32]);
+    }
+
+    #[test]
+    fn handshake_aborts_on_low_order_server_key_share() {
+        let store = TrustStore::new();
+        let config = TlsConfig {
+            hostname: "aether.test",
+            trust: &store,
+            now: 0,
+            allow_unverified: true,
+        };
+
+        // A ServerHello whose X25519 key_share is the all-zero low-order point.
+        let sh_body = build_server_hello(&[0xa5u8; 32], &[], TLS_AES_128_GCM_SHA256, &[0u8; 32]);
+        let sh = handshake_msg(HS_SERVER_HELLO, &sh_body);
+        let sh_record = wrap_plaintext(REC_HANDSHAKE, &sh);
+
+        let mut pipe = Pipe {
+            to_peer: Vec::new(),
+            from_peer: sh_record,
+        };
+        let mut client = ClientSide { p: &mut pipe };
+
+        // The client must abort at the ECDH step rather than deriving keys from
+        // an attacker-forced all-zero shared secret.
+        match connect(&mut client, &config, &[0x33u8; 32]) {
+            Err(TlsError::WeakPublicKey) => {}
+            Err(other) => panic!("expected WeakPublicKey, got {:?}", other),
+            Ok(_) => panic!("handshake must abort on a low-order key share"),
+        }
+    }
+
     // ---- A minimal in-test TLS 1.3 server to drive the full client path ----
 
     /// An in-memory bidirectional pipe.
@@ -906,8 +957,16 @@ mod tests {
     // Pre-rename fixture: the DER below encodes aether.test and cannot be regenerated for the
     // new name without re-signing, so the handshake test connects to "aether.test" to match it.
     const CERT_DER: &str = "308203343082021ca0030201020214504ad3ea3f919686aee08ca8172e53489f2776a3300d06092a864886f70d01010b050030163114301206035504030c0b6165746865722e74657374301e170d3236303632303134313633315a170d3336303631373134313633315a30163114301206035504030c0b6165746865722e7465737430820122300d06092a864886f70d01010105000382010f003082010a0282010100e4dd7baf7f987a6b91db9d8e041295f5b97f3ecfdad0aef3c6e7587c769399252b542ab59ad9358f2f5f3e885c8bf36119d7e0ac735d80b5243817332f34e37ba6e9b5400a977e75093d3b49c494f16b8a63c73551834ac0fe58709a80a6f9a0f8355d8c3a1d452a7c3f7c282c3ee14c8f6ab4fb4d8763086100c62184a90463df9de7a4fc856672e211e694a4be812f2aa3ad9099d54c966ca6e100d9f1c8dba00fd559d5a01f77a6367927825a57e82e17935636645ebd1ecb848d0bbb19a40a0336eb4100f1fe53ea3c6b978ab05f57c13f0e55b5a1307b03d8c80edce420cc0e3463b089a07abd093b0ebf315ecf5af9ad358cc8bc7a8c2dd86cb413254b0203010001a37a3078301d0603551d0e0416041403fe8942062179258f728b66d38a2f194ded7f01301f0603551d2304183016801403fe8942062179258f728b66d38a2f194ded7f01300f0603551d130101ff040530030101ff30250603551d11041e301c820b6165746865722e74657374820d2a2e6165746865722e74657374300d06092a864886f70d01010b05000382010100b3d7a6d4035c81655219e2e17cfad42bd0716a4cd814cb8ad9be9c54513a0021bbb6b20c87f8fafb5c42b8d8e58c2b2489062a2a830c6b566b14ac6f4f76e3d6bcec6dcf44b98bd3a4e24fb422d2a17c7e7855393ea83ce685097914d80a2fb158fb21ae5a88970e3efbac9d5c881c14db116a4ef653cd8386d14fd6872603a2240d2d46eabdb2b436fc1e9aebf763363dc8e3f56804e4e935278fd76aa86b9baea679daf6ee111917426131d57ae0681e5836c6a04452d635c2ac6419e0acdf6964ebfffaf9e3410fd8e2f7c23f500e2e582b0d997a527eb2e11f0646c0a89f1860812aa35510cd645e45ba730cfb494acef33419732a9632408519ceb177f0";
+    // The cert's RSA key material, kept so the CertificateVerify signature below
+    // can be regenerated (see `CV_SIG_PSS`).
+    #[allow(dead_code)]
     const RSA_N: &str = "e4dd7baf7f987a6b91db9d8e041295f5b97f3ecfdad0aef3c6e7587c769399252b542ab59ad9358f2f5f3e885c8bf36119d7e0ac735d80b5243817332f34e37ba6e9b5400a977e75093d3b49c494f16b8a63c73551834ac0fe58709a80a6f9a0f8355d8c3a1d452a7c3f7c282c3ee14c8f6ab4fb4d8763086100c62184a90463df9de7a4fc856672e211e694a4be812f2aa3ad9099d54c966ca6e100d9f1c8dba00fd559d5a01f77a6367927825a57e82e17935636645ebd1ecb848d0bbb19a40a0336eb4100f1fe53ea3c6b978ab05f57c13f0e55b5a1307b03d8c80edce420cc0e3463b089a07abd093b0ebf315ecf5af9ad358cc8bc7a8c2dd86cb413254b";
+    #[allow(dead_code)]
     const RSA_D: &str = "14fda164a671c58ca1d5eadc9b2559e9587d975fb8af2f7f54020f9cbec2be7c3e689ba588bc724bf32980fd406bba4346265ac8c6535044e23bb36e5cde8a1cb861880a5b23ab94056869cc7ec20b1074cd68f876c4f1716e57e3355b26600fdcf95c094aa28e4a48175f30fa0f3c5a696efd316d5a1a57003a9cc6cc8edf44334ee09c7bf4c9632c78620d5fc858c15f08a6fed83894b010b5bf608e800a06f1bde985e15d95549c49bdd9d097c777103abcb5d161a34e7ca7d95de3fd8b93c3579a94b781b4482c89f9a4ea5b55652ebce5e91393dfc824cf1ea80896843da2d2cc43d39b860b77c445764429310d240c9a0485e85d4822244a1627ca9295";
+    // Precomputed rsa_pss_rsae_sha256 signature over the deterministic
+    // CertificateVerify message (see `mock_server_respond`). RFC 8446 requires
+    // PSS here; rsa_pkcs1_* is rejected by the client.
+    const CV_SIG_PSS: &str = "a02ec57dc60ecf027ec5bcc7fb7b3626c20bc65c6b6647997904d405629666b9cd82a9a460df1719c5db354a0c87686cb911f4e4672415f27a4cb86511d74fa1c89672ab17af03299f0b8da689d40357897406788dc1e56aaab921910c202c34e958d312af53e6b28dfed2026758b93b85f02d45a122dff67b89e7970949d5724a3a70ebb92d9af74e905950dc1c9f7b46c793477f5db73da26e680557caeb89aeda5792f5e3ea84b43f3f204918a4ca13035cfc56ee93e38ea995280d7a8ce475936ebd1bc422e1122f022f28e819d3ba789a2ebbafa30e9b39a2339d1db9c633e620b9e717ec13f0694e9e5f58c871113b94a091af51bd37f150508ed14262";
 
     /// Build the server's encrypted handshake flight and finished handling.
     /// Returns the bytes the server sends and the server-side app keys.
@@ -936,7 +995,7 @@ mod tests {
         transcript.extend_from_slice(&sh);
 
         // Key schedule (server perspective).
-        let shared = cr::x25519(&s_priv, &client_pub);
+        let shared = cr::x25519_checked(&s_priv, &client_pub).expect("client key share is low-order");
         let early = cr::hkdf_extract(&[0u8; 32], &[0u8; 32]);
         let empty = sha256(b"");
         let derived = cr::derive_secret(&early, "derived", &empty);
@@ -964,12 +1023,26 @@ mod tests {
         let cert_msg = handshake_msg(HS_CERTIFICATE, &cert_body);
         transcript.extend_from_slice(&cert_msg);
 
-        // CertificateVerify (RSA PKCS1 SHA256 over the transcript).
+        // CertificateVerify over the transcript.
+        //
+        // RFC 8446 §4.4.3 forbids rsa_pkcs1_* schemes in the TLS 1.3
+        // CertificateVerify: an RSA key MUST sign with RSASSA-PSS
+        // (rsa_pss_rsae_sha256). The client enforces this (see
+        // `parse_certificate_verify`), so the mock signs with rsa_pss_rsae_sha256.
+        //
+        // The whole handshake is deterministic (fixed entropy, fixed server key
+        // and randoms, fixed cert), so `th_cert` — and therefore this signature —
+        // is a constant. RSASSA-PSS signing needs the private-key modexp, which
+        // isn't reachable from this module, so the signature is precomputed. It
+        // was generated by PSS-encoding `cv_msg_input` (salt = 32 zero bytes,
+        // MGF1-SHA256, trailer 0xbc, emBits = 2047 — matching `rsa_pss_verify`)
+        // and raising it to RSA_D mod RSA_N. Regenerate if the transcript changes
+        // (the handshake will fail with BadSignature until you do).
         let th_cert = sha256(&transcript);
-        let cv_msg_input = certificate_verify_message(&arr32(&th_cert));
-        let sig = x509::rsa_pkcs1_sha256_sign(&hex(RSA_N), &hex(RSA_D), &cv_msg_input);
+        let _cv_msg_input = certificate_verify_message(&arr32(&th_cert));
+        let sig = hex(CV_SIG_PSS);
         let mut cv_body = Vec::new();
-        push_u16(&mut cv_body, SIG_RSA_PKCS1_SHA256);
+        push_u16(&mut cv_body, SIG_RSA_PSS_RSAE_SHA256);
         push_u16(&mut cv_body, sig.len() as u16);
         cv_body.extend_from_slice(&sig);
         let cv_msg = handshake_msg(HS_CERTIFICATE_VERIFY, &cv_body);
@@ -1122,7 +1195,7 @@ mod tests {
             // Rebuild client handshake keys the same way the server did.
             let client_pub = cpub;
             let s_priv = [0x5au8; 32];
-            let shared = cr::x25519(&s_priv, &client_pub);
+            let shared = cr::x25519_checked(&s_priv, &client_pub).expect("client key share is low-order");
             let early = cr::hkdf_extract(&[0u8; 32], &[0u8; 32]);
             let empty = sha256(b"");
             let derived = cr::derive_secret(&early, "derived", &empty);
@@ -1177,5 +1250,28 @@ mod tests {
         let (it2, pt2) = open_record(&mut client_app_view, &h2, &sent2[o2 + 5..o2 + 5 + l2]).unwrap();
         assert_eq!(it2, REC_APPLICATION_DATA);
         assert_eq!(&pt2, b"GET / HTTP/1.1\r\n\r\n");
+    }
+
+    /// RFC 8446 §4.4.3: rsa_pkcs1_* schemes MUST NOT be used in the TLS 1.3
+    /// CertificateVerify. The client must reject them with BadSignature even
+    /// though the signature bytes are otherwise well formed.
+    #[test]
+    fn certificate_verify_rejects_rsa_pkcs1() {
+        // A syntactically valid CertificateVerify body carrying rsa_pkcs1_sha256.
+        let mut body = Vec::new();
+        push_u16(&mut body, SIG_RSA_PKCS1_SHA256);
+        let sig = [0u8; 256];
+        push_u16(&mut body, sig.len() as u16);
+        body.extend_from_slice(&sig);
+        assert_eq!(parse_certificate_verify(&body), Err(TlsError::BadSignature));
+
+        // The permitted PSS scheme still parses (only the scheme gate is tested;
+        // signature validity is exercised by full_handshake_against_mock_server).
+        let mut ok = Vec::new();
+        push_u16(&mut ok, SIG_RSA_PSS_RSAE_SHA256);
+        push_u16(&mut ok, sig.len() as u16);
+        ok.extend_from_slice(&sig);
+        let (alg, _) = parse_certificate_verify(&ok).expect("pss scheme accepted");
+        assert_eq!(alg, SigAlg::RsaPssSha256);
     }
 }

@@ -117,6 +117,20 @@ impl ColdMemoryCompressor {
     /// object was stored verbatim (policy=Never, pool refused, or data didn't shrink).
     pub fn admit_cold(&mut self, id: Hash256, data: Vec<u8>, pressure: PressureLevel) -> bool {
         let original_len = data.len();
+
+        // Content-addressed store: re-admitting an id already present replaces the
+        // entry in place (BTreeMap::insert drops the old payload). Reclaim the prior
+        // entry's contribution so the running totals update rather than accumulate.
+        if let Some(old) = self.entries.get(&id) {
+            self.stats.bytes_in = self.stats.bytes_in.saturating_sub(old.original_len);
+            self.stats.bytes_stored = self.stats.bytes_stored.saturating_sub(old.payload.len());
+            if old.is_compressed {
+                self.stats.objects_compressed = self.stats.objects_compressed.saturating_sub(1);
+            } else {
+                self.stats.objects_raw = self.stats.objects_raw.saturating_sub(1);
+            }
+        }
+
         self.stats.bytes_in += original_len;
 
         // ── Policy: Never ────────────────────────────────────────────────────
@@ -411,6 +425,13 @@ impl ColdTierManager {
     pub fn put(&mut self, id: Hash256, data: Vec<u8>, pressure: PressureLevel) {
         let data_len = data.len();
         self.stats.total_bytes_if_uncompressed += data_len;
+
+        // If this id is already resident hot, reclaim its bytes first so a re-put
+        // (content-addressed update, or re-put after a promote) updates in place
+        // rather than double-counting the displaced entry's length.
+        if let Some(old) = self.hot.get(&id) {
+            self.hot_used_bytes = self.hot_used_bytes.saturating_sub(old.len());
+        }
 
         // If there's room in the hot tier, place it there directly.
         if self.hot_used_bytes + data_len <= self.hot_quota_bytes {

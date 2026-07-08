@@ -107,6 +107,12 @@ pub enum TopicError {
     /// in the current (compacted) event log. The caller should re-subscribe
     /// without a `since` hint or use the current head hash.
     SinceHashNotFound,
+    /// Event-log compaction dropped events this subscriber had not yet polled
+    /// (its cursor pointed into the drained window). Surfaced once, on the next
+    /// [`poll`](ReactivePlane::poll), so a non-[`Delivery::AtMostOnce`] consumer
+    /// can detect the gap instead of silently missing history. The subsequent
+    /// poll resumes from the start of the surviving log.
+    Lagged,
 }
 
 impl From<FwError> for TopicError {
@@ -184,6 +190,10 @@ struct SubState {
     cursor: usize,
     /// Hashes already delivered (for `ExactlyOnce` dedup).
     seen: BTreeSet<ObjectId>,
+    /// Set when compaction drained events this subscriber had not yet polled.
+    /// Surfaced (and cleared) as [`TopicError::Lagged`] on the next poll so
+    /// non-[`Delivery::AtMostOnce`] consumers can detect the dropped history.
+    lagged: bool,
 }
 
 /// One delivered event, recorded in the deterministic log: *what* (by hash), under
@@ -374,6 +384,7 @@ impl ReactivePlane {
             ttl: opts.ttl,
             cursor,
             seen: BTreeSet::new(),
+            lagged: false,
         };
         self.subs.insert(id, sub);
         Ok(Subscription { id, topic: cap.topic.clone(), node: cap.node, face, delivery: opts.delivery })
@@ -441,6 +452,13 @@ impl ReactivePlane {
             // drained region is clamped to 0 (start of the surviving log);
             // a cursor beyond keep_from is shifted down by keep_from.
             for sub in self.subs.values_mut() {
+                // A cursor inside the drained window means undelivered events are
+                // being discarded. For delivery modes that promise every event
+                // (all but AtMostOnce), flag the gap so the next poll can report
+                // it rather than silently clamping the cursor to 0.
+                if sub.cursor < keep_from && sub.delivery != Delivery::AtMostOnce {
+                    sub.lagged = true;
+                }
                 sub.cursor = sub.cursor.saturating_sub(keep_from);
             }
         }
@@ -479,6 +497,13 @@ impl ReactivePlane {
         }
         if self.firewall.is_revoked(sub.node) {
             return Err(TopicError::Revoked);
+        }
+        // Compaction dropped undelivered events for this subscriber: surface the
+        // gap once (mirroring the SinceHashNotFound contract) before resuming.
+        // Cleared here so the following poll delivers from the surviving log.
+        if sub.lagged {
+            sub.lagged = false;
+            return Err(TopicError::Lagged);
         }
         self.firewall.consume(sub.node)?;
 
@@ -652,7 +677,7 @@ pub fn seal_notification(
 /// Open a sealed notification back into the event hash. Returns
 /// [`SessionError::AuthFailed`] on any tamper, wrong key, or wrong AAD.
 pub fn open_notification(
-    session: &Session,
+    session: &mut Session,
     now: u64,
     frame: &Frame,
 ) -> Result<ObjectId, SessionError> {
@@ -771,14 +796,14 @@ mod tests {
         let alice = KemIdentity::generate(b"alice-seed");
         let bob = KemIdentity::generate(b"bob-seed");
         let (mut tx, ct) = Session::initiate(alice.id, bob.id, &bob.public, b"eph", 100).unwrap();
-        let rx = Session::accept(&bob, alice.id, &ct, 100);
+        let mut rx = Session::accept(&bob, alice.id, &ct, 100);
         let oid = Hash256::of(b"event-object");
         let frame = seal_notification(&mut tx, 1, oid).unwrap();
-        assert_eq!(open_notification(&rx, 1, &frame).unwrap(), oid);
+        assert_eq!(open_notification(&mut rx, 1, &frame).unwrap(), oid);
         // Tamper → authentication failure, no plaintext leaks.
         let mut bad = frame.clone();
         bad.corrupt_first_byte();
-        assert_eq!(open_notification(&rx, 1, &bad).err(), Some(SessionError::AuthFailed));
+        assert_eq!(open_notification(&mut rx, 1, &bad).err(), Some(SessionError::AuthFailed));
     }
 
     // ---- item 6: declared delivery semantics; exactly-once dedup ----

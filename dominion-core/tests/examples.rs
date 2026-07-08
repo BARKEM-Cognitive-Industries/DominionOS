@@ -18,7 +18,7 @@ fn examples_dir() -> PathBuf {
     PathBuf::from(manifest).parent().unwrap().join("examples")
 }
 
-/// Evaluate an Dominion source file through the interpreter.
+/// Evaluate a Dominion source file through the interpreter.
 fn eval_file(path: &PathBuf) -> Result<String, String> {
     let src = fs::read_to_string(path)
         .map_err(|e| format!("could not read {}: {}", path.display(), e))?;
@@ -27,7 +27,7 @@ fn eval_file(path: &PathBuf) -> Result<String, String> {
         .map_err(|e| format!("eval error in {}: {}", path.display(), e))
 }
 
-/// Evaluate an Dominion source file through the bytecode compiler + VM.
+/// Evaluate a Dominion source file through the bytecode compiler + VM.
 fn compile_eval_file(path: &PathBuf) -> Result<String, String> {
     let src = fs::read_to_string(path)
         .map_err(|e| format!("could not read {}: {}", path.display(), e))?;

@@ -536,6 +536,13 @@ pub fn parse_document(input: &str) -> NodeRef {
 
 /// Build a list of top-level nodes from an HTML fragment (used for `innerHTML`).
 pub fn build_fragment(input: &str) -> Vec<NodeRef> {
+    // Cap tree depth so deeply-nested untrusted input cannot build a tree deep
+    // enough to overflow the fixed kernel stack during a later recursive traversal
+    // (find/find_all/walk_elements/collect_text/serialize all recurse by tree depth).
+    // Beyond the cap, elements simply flatten in as siblings of the deepest open
+    // element rather than nesting further. 512 is far past any legitimate document.
+    const MAX_TREE_DEPTH: usize = 512;
+
     let tokens = tokenize(input);
     let mut roots: Vec<NodeRef> = Vec::new();
     let mut stack: Vec<NodeRef> = Vec::new();
@@ -550,7 +557,7 @@ pub fn build_fragment(input: &str) -> Vec<NodeRef> {
                     e.attrs = attrs;
                 }
                 attach(&mut roots, &stack, &el);
-                if !self_closing && !is_void(&name) {
+                if !self_closing && !is_void(&name) && stack.len() < MAX_TREE_DEPTH {
                     stack.push(el);
                 }
             }

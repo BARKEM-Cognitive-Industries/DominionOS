@@ -94,10 +94,13 @@ impl RamResidencyIndex {
             if let Some(rc) = self.refcounts.get_mut(&id) {
                 *rc += 1;
             }
+            // Maintain total_references incrementally (avoid O(N) resum per put).
+            self.stats.total_references += 1;
         }
 
-        // Rebuild derived stats
-        self.rebuild_stats();
+        // Derived counters that are O(1) to read directly.
+        self.stats.unique_objects = self.residents.len();
+        self.stats.domains = self.domain_heads.len();
 
         (id, was_new)
     }

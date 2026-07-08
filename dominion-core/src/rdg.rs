@@ -9,8 +9,9 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BinaryHeap};
 use alloc::vec::Vec;
+use core::cmp::Reverse;
 
 // ─── Resource types ──────────────────────────────────────────────────────────
 
@@ -325,19 +326,18 @@ impl Rdg {
             }
         }
 
-        // Kahn's queue — deterministic: use a sorted ready list.
-        let mut ready: Vec<PassIdx> = live_passes
+        // Kahn's queue — deterministic: a min-heap always pops the smallest ready
+        // index in O(log V), avoiding the O(V) shift of remove(0) and per-iteration
+        // re-sorts.
+        let mut ready: BinaryHeap<Reverse<PassIdx>> = live_passes
             .iter()
             .copied()
             .filter(|idx| in_degree[idx] == 0)
+            .map(Reverse)
             .collect();
-        ready.sort_unstable();
 
         let mut execution_order: Vec<PassIdx> = Vec::with_capacity(live_passes.len());
-        while !ready.is_empty() {
-            // Pick the smallest index for determinism (stable when multiple are ready).
-            ready.sort_unstable();
-            let current = ready.remove(0);
+        while let Some(Reverse(current)) = ready.pop() {
             execution_order.push(current);
 
             if let Some(dsts) = edges.get(&current) {
@@ -345,7 +345,7 @@ impl Rdg {
                     let deg = in_degree.entry(dst).or_insert(1);
                     *deg -= 1;
                     if *deg == 0 {
-                        ready.push(dst);
+                        ready.push(Reverse(dst));
                     }
                 }
             }
@@ -361,10 +361,14 @@ impl Rdg {
             exec_pos.insert(pidx, pos);
         }
 
-        // For each resource: first_write_time, last_read_time (in exec positions).
+        // For each resource: first_write_time, last_read_time, last_write_time
+        // (in exec positions). last_write is tracked so a write occurring after the
+        // last read still extends the resource's live interval — otherwise its slot
+        // could be aliased away while a later write is still pending.
         struct Lifetime {
             first_write: usize,
             last_read: usize,
+            last_write: usize,
         }
 
         let mut lifetimes: BTreeMap<ResourceId, Lifetime> = BTreeMap::new();
@@ -375,15 +379,20 @@ impl Rdg {
                 let lt = lifetimes.entry(rid).or_insert(Lifetime {
                     first_write: pos,
                     last_read: pos,
+                    last_write: pos,
                 });
                 if pos < lt.first_write {
                     lt.first_write = pos;
+                }
+                if pos > lt.last_write {
+                    lt.last_write = pos;
                 }
             }
             for &rid in &pass.reads {
                 let lt = lifetimes.entry(rid).or_insert(Lifetime {
                     first_write: pos,
                     last_read: pos,
+                    last_write: pos,
                 });
                 if pos > lt.last_read {
                     lt.last_read = pos;
@@ -398,7 +407,7 @@ impl Rdg {
         // A transient resource can reuse a slot if slot_end_time < resource.first_write.
 
         struct Slot {
-            end_time: usize, // last_read of the resource currently assigned
+            end_time: usize, // last-touch (max of last_read/last_write) of the resource assigned
             base_offset: u64,
             size: u64,
         }
@@ -458,13 +467,13 @@ impl Rdg {
                     offset: base,
                 });
                 resource_placement.insert(rid, (base, canon));
-                // Update slot's end time.
-                slots[si].end_time = lt.last_read;
+                // Update slot's end time (true last touch — read or write).
+                slots[si].end_time = lt.last_read.max(lt.last_write);
             } else {
                 // Open a new slot.
                 let base = heap_bytes;
                 heap_bytes += size;
-                slots.push(Slot { end_time: lt.last_read, base_offset: base, size });
+                slots.push(Slot { end_time: lt.last_read.max(lt.last_write), base_offset: base, size });
                 resource_placement.insert(rid, (base, rid));
             }
         }

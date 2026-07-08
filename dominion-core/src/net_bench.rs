@@ -18,19 +18,18 @@ mod net_bench {
     use crate::dominionlink::{DominionId, DominionLink};
     use crate::hash::Hash256;
     use crate::legacynet::{
-        Protocol, SocketCapability, NetworkStack, TcpConnection,
-        LegacyGateway, encapsulate, decapsulate, FlowKey,
+        Protocol, SocketCapability, TcpConnection,
+        LegacyGateway, encapsulate, decapsulate,
     };
     use crate::ndn::{Forwarder, Name, Data};
     use crate::net::{
-        build_ethernet, build_ipv4, build_tcp, build_udp, build_icmp_echo, build_dns_query,
+        build_ethernet, build_ipv4, build_tcp, build_dns_query,
         parse_ethernet, parse_ipv4, parse_tcp, parse_dns_answer,
         checksum, MacAddr, Ipv4Addr, ArpCache,
-        ETHERTYPE_IPV4, IPPROTO_TCP, IPPROTO_UDP,
+        ETHERTYPE_IPV4, IPPROTO_TCP,
         TCP_SYN, TCP_ACK,
     };
     use crate::transport::{Cubic, Bbr, OfflineReplica, ReplicaStore};
-    use alloc::vec::Vec;
 
     // ─────────── reporting helpers ───────────
     fn ns_per_op(elapsed_secs: f64, iters: u64) -> f64 {

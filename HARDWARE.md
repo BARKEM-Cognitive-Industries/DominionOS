@@ -1,6 +1,6 @@
 # Hardware Compatibility & Known Issues
 
-AetherOS runs on real hardware and virtual machines, but support is limited. This guide explains what works, what doesn't, and what to expect.
+DominionOS runs on real hardware and virtual machines, but support is limited. This guide explains what works, what doesn't, and what to expect.
 
 ---
 
@@ -12,10 +12,10 @@ AetherOS runs on real hardware and virtual machines, but support is limited. Thi
 | **Boot** | ✅ BIOS / UEFI | Legacy BIOS preferred. UEFI works. Secure Boot may fail. |
 | **CPU** | ✅ Multi-core SMP | Up to 16 cores tested. Scaling linear. |
 | **Memory** | ✅ Up to 16 GB | Tested. Higher untested. |
-| **Storage** | ⚠️ Limited | virtio-blk (QEMU), PCI AHCI. NVMe not yet. |
-| **Network** | ⚠️ Limited | virtio-net (QEMU), Broadcom experimental. |
-| **Keyboard** | ⚠️ PS/2 only | No USB HID yet. PS/2 mice work. Trackpads don't. |
-| **Mouse** | ⚠️ PS/2 only | USB mice untested. Touchscreen no. |
+| **Storage** | ✅ Implemented | virtio-blk, AHCI (SATA), NVMe (PCIe), USB Mass Storage. Tested in QEMU; bare-metal testing thin. |
+| **Network** | ✅ Implemented | virtio-net, Intel e1000/e1000e, RTL8139. Tested in QEMU; bare-metal testing thin. |
+| **Keyboard** | ✅ PS/2 + USB HID | PS/2 (with i8042 polling under UEFI/APIC) and USB HID keyboards. Trackpads don't. |
+| **Mouse** | ✅ PS/2 + USB HID | PS/2 and USB HID mice. Touchscreen no. |
 | **Graphics** | ⚠️ Software | Framebuffer only. No GPU acceleration. |
 | **Audio** | ❌ No | Specified. Not implemented. |
 | **Wireless** | ❌ No | WiFi/Bluetooth not supported. |
@@ -60,14 +60,15 @@ AetherOS runs on real hardware and virtual machines, but support is limited. Thi
 
 ## Storage Support
 
-### Tested & Working
-- ✅ **virtio-blk** (QEMU)
-- ✅ **PCI AHCI** (some boards)
+### Implemented & Working (tested in QEMU)
+- ✅ **virtio-blk**
+- ✅ **AHCI (SATA)**
+- ✅ **NVMe (PCIe)**
+- ✅ **USB Mass Storage** (Bulk-Only Transport + SCSI over xHCI)
 
-### Untested
-- ⚠️ **NVMe (PCI express):** Not implemented yet
-- ⚠️ **SCSI (LSI, Megaraid):** Not tested
-- ⚠️ **USB Mass Storage:** Not implemented
+### Untested / Not Implemented
+- ⚠️ **AHCI/NVMe on real hardware:** Implemented; validated primarily in QEMU, thin on bare metal
+- ⚠️ **SCSI (LSI, Megaraid):** Not implemented
 
 ### Caveats
 - **Single disk only** (QEMU testing: one virtio-blk)
@@ -84,19 +85,21 @@ AetherOS runs on real hardware and virtual machines, but support is limited. Thi
 
 ## Network Support
 
-### Tested & Working
-- ✅ **virtio-net** (QEMU)
+### Implemented & Working (tested primarily in QEMU)
+- ✅ **virtio-net**
+- ✅ **Intel e1000 / e1000e** (82540EM, 82574L, I217, I211)
+- ✅ **RTL8139**
 - ✅ **ARP** (address resolution)
 - ✅ **ICMP** (ping)
 - ✅ **UDP** (basic datagram)
+- ✅ **DHCP** (where wired)
 
-### Untested
-- ⚠️ **Real Ethernet NICs:** Only virtio tested in QEMU
-- ⚠️ **Broadcom BCM57416:** Experimental (test platform has this; limited driver)
-- ⚠️ **Intel 82540EM:** Not tested
+All NICs share a single NIC abstraction. Tested primarily in QEMU; bare-metal NIC testing is thin.
+
+### Untested / Not Implemented
+- ⚠️ **Real Ethernet NICs:** Drivers implemented (e1000/RTL8139) but validated mostly in QEMU
 - ⚠️ **WiFi / Bluetooth:** Not implemented
 - ⚠️ **IPv6:** Specified, not tested
-- ⚠️ **DNS/DHCP:** Manual IP configuration only
 
 ### Setting Up Networking
 
@@ -104,7 +107,7 @@ AetherOS runs on real hardware and virtual machines, but support is limited. Thi
 ```bash
 # Default setup (user networking)
 qemu-system-x86_64 \
-  -drive file=aetheros.img,format=raw \
+  -drive file=dominionos.img,format=raw \
   -net nic,model=virtio \
   -net user,hostfwd=tcp::8000-:80
 ```
@@ -124,14 +127,14 @@ qemu-system-x86_64 \
 ## Input Devices
 
 ### Keyboard
-- ✅ **PS/2 PS/2:** Full support
-- ❌ **USB HID:** Not implemented
+- ✅ **PS/2:** Full support (direct i8042 polling, so it works under UEFI/APIC)
+- ✅ **USB HID:** Supported via xHCI (tested in QEMU)
 - ❌ **Bluetooth:** Not implemented
 - ⚠️ **Laptop keyboard:** Depends on BIOS PS/2 emulation
 
 ### Mouse
 - ✅ **PS/2 mouse:** Supported
-- ❌ **USB mouse:** Not implemented
+- ✅ **USB HID mouse:** Supported via xHCI (tested in QEMU)
 - ❌ **Touchpad:** Not implemented (trackpads are not standard PS/2)
 - ❌ **Touchscreen:** Not implemented
 
@@ -140,7 +143,7 @@ qemu-system-x86_64 \
 - ⚠️ **Function keys (Fn):** Depends on BIOS
 
 ### If Your Input Doesn't Work
-1. **USB keyboard/mouse?** Try PS/2 or USB→PS/2 adapter
+1. **USB keyboard/mouse?** Supported via xHCI, but validated mostly in QEMU — if it fails on your board, try PS/2 or a USB→PS/2 adapter
 2. **Laptop trackpad?** Doesn't work; use external mouse
 3. **Keyboard not responding?** Try typing without visual feedback (it may be buffering)
 
@@ -174,7 +177,7 @@ qemu-system-x86_64 \
 
 ### AMD Platforms
 - ⚠️ **Secure Boot:** Same as Intel; disable if needed.
-- ⚠️ **Infinity Fabric:** Not relevant for AetherOS.
+- ⚠️ **Infinity Fabric:** Not relevant for DominionOS.
 
 ### Apple Silicon (M1/M2/M3)
 - ❌ **Not supported.** ARM64 port in progress but not released.
@@ -209,16 +212,16 @@ qemu-system-x86_64 \
 
 ## Experimental Support
 
-### Known to Work But Not Guaranteed
-- Broadcom BCM57416 (on test platform; minimal driver)
-- AHCI storage on some ASUS boards
-- Multi-core (8 cores on test platform; 16+ untested)
+### Implemented But Not Broadly Validated on Real Hardware
+- AHCI / NVMe / USB Mass Storage (work in QEMU; bare-metal testing thin)
+- Intel e1000/e1000e and RTL8139 NICs (work in QEMU; bare-metal testing thin)
+- USB HID keyboard/mouse via xHCI (work in QEMU)
+- Multi-core (up to 16 cores tested)
 
 ### Known to Not Work
-- NVMe (no driver)
-- USB devices
-- WiFi
+- WiFi / Bluetooth
 - Audio
+- GPU acceleration
 - Secure Boot (usually)
 
 ---
@@ -259,7 +262,7 @@ qemu-system-x86_64 \
 We provide a hardware detection utility:
 
 ```bash
-# Boot AetherOS
+# Boot DominionOS
 ./run.ps1
 
 # In the shell, type:
@@ -284,16 +287,14 @@ Found a problem? Please report it with:
 5. **QEMU test:** Does it work in QEMU? (Helps isolate driver issues)
 
 Example:
-> "Boots fine in QEMU but hangs at 'PCI probe' on bare metal (ASMedia 1166 NVMe controller). Same AetherOS.img on both. Dell Precision 7550, Intel Xeon E-2176M."
+> "Boots fine in QEMU but hangs at 'PCI probe' on bare metal (ASMedia 1166 NVMe controller). Same DominionOS.img on both. Dell Precision 7550, Intel Xeon E-2176M."
 
 ---
 
 ## Future Hardware Support
 
 ### Planned
-- NVMe (PCIe storage)
-- USB HID (keyboard/mouse)
-- AHCI improvements (more boards)
+- Bare-metal validation of existing storage/NIC/USB drivers (more boards)
 - Multi-monitor support
 - GPU compute integration
 
@@ -308,11 +309,11 @@ Example:
 
 ## Bottom Line
 
-**AetherOS works best in QEMU.** Real hardware works but with caveats:
+**DominionOS works best in QEMU.** Real hardware works but with caveats:
 - x86-64 Intel/AMD only
-- PS/2 input only
-- Limited storage/network support
-- Framebuffer graphics only
+- PS/2 and USB HID input (USB validated mostly in QEMU)
+- Storage (virtio-blk/AHCI/NVMe/USB) and network (virtio-net/e1000/RTL8139) drivers implemented but tested primarily in QEMU
+- Framebuffer graphics only (no GPU acceleration)
 
 **If your hardware isn't listed, it probably won't work yet.** That's okay. Use QEMU for now, and we'll expand support over time.
 

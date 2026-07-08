@@ -145,7 +145,9 @@ pub struct TransformerBlock {
 
 impl TransformerBlock {
     /// Construct a new block with Kaiming-uniform weight init.
-    /// Returns `None` if `d_model % n_heads != 0`.
+    /// Returns `None` if `d_model % n_heads != 0`, or if the GQA invariant
+    /// `n_kv_heads != 0 && n_heads % n_kv_heads == 0` does not hold (otherwise the
+    /// head-expansion in `forward` would leave some heads attending to all-zero K/V).
     pub fn new(
         d_model: usize,
         n_heads: usize,
@@ -155,6 +157,9 @@ impl TransformerBlock {
         seed: u64,
     ) -> Option<Self> {
         if d_model % n_heads != 0 {
+            return None;
+        }
+        if n_kv_heads == 0 || n_heads % n_kv_heads != 0 {
             return None;
         }
         let kv_dim = n_kv_heads * (d_model / n_heads);

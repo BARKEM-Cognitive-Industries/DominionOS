@@ -182,7 +182,10 @@ pub fn poll() {
 /// byte) into the input queue. Used by the USB-HID keyboard driver, which decodes HID
 /// boot-protocol usage codes itself rather than going through the PS/2 scancode decoder.
 pub fn inject(byte: u8) {
-    QUEUE.lock().push(byte);
+    // Guard with without_interrupts like try_read/read_char: inject() is called from
+    // usbhid::poll() with interrupts enabled, so taking QUEUE.lock() bare would let the
+    // keyboard ISR (which also locks QUEUE via add_scancode) deadlock against it.
+    interrupts::without_interrupts(|| QUEUE.lock().push(byte));
 }
 
 /// Non-blocking pull of one byte. Polls the hardware first so it works with or without

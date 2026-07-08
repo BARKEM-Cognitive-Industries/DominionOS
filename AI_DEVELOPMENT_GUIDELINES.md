@@ -1,6 +1,6 @@
-# AI Development Guidelines for AetherOS
+# AI Development Guidelines for DominionOS
 
-This is a quick reference for AI assistants (LLMs) helping develop AetherOS. **Specs are ground truth. Code follows specs.**
+This is a quick reference for AI assistants (LLMs) helping develop DominionOS. **Specs are ground truth. Code follows specs.**
 
 ---
 

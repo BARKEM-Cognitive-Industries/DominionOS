@@ -1,4 +1,4 @@
-//! The Aether **pretty-printer**: [`Program`] AST → source text.
+//! The Dominion **pretty-printer**: [`Program`] AST → source text.
 //!
 //! This is the inverse of [`super::parser::parse_source`] and the linchpin of the
 //! IDE's bidirectional graph⇄code sync: the visual node graph and the source buffer are
@@ -12,7 +12,7 @@ use super::ast::*;
 use alloc::format;
 use alloc::string::{String, ToString};
 
-/// Render a whole program as Aether source. Top-level items are separated by a blank
+/// Render a whole program as Dominion source. Top-level items are separated by a blank
 /// line; definitions span multiple indented lines; bare statements are one line each.
 pub fn to_source(p: &Program) -> String {
     let mut out = String::new();

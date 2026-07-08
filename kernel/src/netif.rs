@@ -11,26 +11,50 @@ use crate::dma::{self, DmaRegion};
 use crate::pci;
 use crate::virtio::{Buf, VirtQueue, VirtioTransport};
 use dominion_core::net::MacAddr;
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-/// The system NIC, probed once at boot.
-static NIC: Mutex<Option<VirtioNet>> = Mutex::new(None);
+/// The driver-agnostic contract every NIC implements. The rest of the kernel — the
+/// ARP/IPv4/ICMP/UDP/DHCP stack in [`dominion_core::net`], the shell, the web
+/// client — talks only to this trait, so virtio-net, the Intel e1000, or any future
+/// controller are interchangeable behind [`with_nic`].
+pub trait Nic: Send {
+    /// The station MAC address.
+    fn mac(&self) -> MacAddr;
+    /// Transmit one Ethernet frame; returns `false` if it could not be queued.
+    fn transmit(&mut self, frame: &[u8]) -> bool;
+    /// Non-blocking receive: the next frame if one has arrived.
+    fn poll_frame(&mut self) -> Option<Vec<u8>>;
+}
 
-/// Probe for a virtio-net device and install it globally. Returns true if found.
+/// The system NIC, probed once at boot. Boxed behind [`Nic`] so any driver fits.
+static NIC: Mutex<Option<Box<dyn Nic>>> = Mutex::new(None);
+
+/// Probe for a network device and install it globally. Returns true if found.
+/// virtio-net is preferred (the paravirtual fast path); failing that we try a
+/// real Intel e1000/e1000e — so a physical or VMware/VirtualBox machine still
+/// gets networking through the same abstraction.
 pub fn init_global() -> bool {
     let mut guard = NIC.lock();
     if guard.is_some() {
         return true;
     }
-    *guard = VirtioNet::init();
-    guard.is_some()
+    if let Some(v) = VirtioNet::init() {
+        *guard = Some(Box::new(v));
+        return true;
+    }
+    if let Some(e) = crate::e1000::E1000::init() {
+        *guard = Some(Box::new(e));
+        return true;
+    }
+    false
 }
 
 /// Run `f` with the global NIC if one is present.
-pub fn with_nic<R>(f: impl FnOnce(&mut VirtioNet) -> R) -> Option<R> {
-    NIC.lock().as_mut().map(f)
+pub fn with_nic<R>(f: impl FnOnce(&mut dyn Nic) -> R) -> Option<R> {
+    NIC.lock().as_mut().map(|n| f(&mut **n))
 }
 
 /// The NIC's MAC address, or all-zero if none is attached.
@@ -119,6 +143,11 @@ impl VirtioNet {
     /// Transmit one Ethernet frame. Prepends the virtio_net_hdr and waits for the
     /// device to consume it. Returns `false` on descriptor exhaustion.
     pub fn transmit(&mut self, frame: &[u8]) -> bool {
+        // Reject oversized frames before the memcpy: the header + frame must fit in
+        // the fixed TX DMA buffer, or we'd overflow it and corrupt adjacent memory.
+        if VIRTIO_NET_HDR_LEN + frame.len() > self.tx_buf.size {
+            return false;
+        }
         let base = self.tx_buf.virt;
         unsafe {
             // Zeroed 10-byte virtio_net_hdr.
@@ -142,7 +171,10 @@ impl VirtioNet {
     pub fn poll_frame(&mut self) -> Option<Vec<u8>> {
         let (head, len) = self.rx.poll()?;
         let buf_index = self.head_to_buf[head as usize];
-        let total = len as usize;
+        // The device reports the used length; clamp it to the actual RX buffer
+        // capacity so a buggy/malicious device can't drive an out-of-bounds read
+        // past this 2 KiB slot into adjacent DMA/kernel memory.
+        let total = (len as usize).min(RX_BUF_SIZE);
         let frame = if total > VIRTIO_NET_HDR_LEN {
             let start = self.rx_pool.virt + (buf_index * RX_BUF_SIZE + VIRTIO_NET_HDR_LEN) as u64;
             let frame_len = total - VIRTIO_NET_HDR_LEN;
@@ -158,6 +190,18 @@ impl VirtioNet {
         self.post_rx(buf_index);
         self.rx.kick(&self.transport);
         frame
+    }
+}
+
+impl Nic for VirtioNet {
+    fn mac(&self) -> MacAddr {
+        self.mac
+    }
+    fn transmit(&mut self, frame: &[u8]) -> bool {
+        VirtioNet::transmit(self, frame)
+    }
+    fn poll_frame(&mut self) -> Option<Vec<u8>> {
+        VirtioNet::poll_frame(self)
     }
 }
 

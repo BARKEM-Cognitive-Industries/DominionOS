@@ -1,8 +1,8 @@
-# AetherOS v2 Architecture
+# DominionOS v2 Architecture
 
 ## System Overview
 
-**AetherOS** is a capability-first operating system targeting x86_64 & aarch64 with a unified, self-verifying trust model. The kernel (bootloader.rs + ~100k LOC) provides process isolation and capability enforcement; **dominion-core** (safe Rust, `#![forbid(unsafe)]` in the core) implements a semantic compute substrate—a Dominion language interpreter, named-data networking, browser/shell, rendering pipeline, ML inference, and persistent object graph. The system executes as a **single application per boot** with nine integrated apps (Desktop, Files, Browser, Terminal, Editor, IDE, Explorer, Task Manager, Settings) sharing one filesystem, scheduler, and world graph.
+**DominionOS** is a capability-first operating system targeting x86_64 & aarch64 with a unified, self-verifying trust model. The kernel (a freestanding x86_64 kernel with SMP bring-up, paging, GDT/IDT, ACPI/PIC, and device drivers) provides process isolation and capability enforcement; **dominion-core** (safe Rust, `#![forbid(unsafe)]` in the core) implements a semantic compute substrate—a Dominion language interpreter, named-data networking, browser/shell, rendering pipeline, ML inference, and persistent object graph. The system executes as a **single application per boot** with nine integrated apps (Desktop, Files, Browser, Terminal, Editor, IDE, Explorer, Task Manager, Settings) sharing one filesystem, scheduler, and world graph.
 
 **Key architectural tension:** The spec promises Stage 3-11 vision (formal microkernel verification, heterogeneous GPU/NPU scheduling, generative storage, capability-enforced driver synthesis, AI-assisted security, deniable storage) but the implementation delivers **Stage 2-4 pragmatic substrate** (working memory safety, content-addressed objects, cooperative scheduling, capability model, browser/shell/rendering). Most subsystems are **60-70% specified and 40-60% implemented**; critical gaps exist in formal verification, hardware integration (GPU/CHERI), and distributed multi-agent orchestration.
 
@@ -25,7 +25,7 @@
 ## Subsystem Layers
 
 ### 1. **Microkernel & Core Execution**
-**What:** ~100k LOC kernel (bootloader + x86_64 SMP bring-up, page tables, GDT/IDT, ACPI/PIC, virtio drivers). Not formally verified; pragmatic stage 2 prototype.
+**What:** A freestanding x86_64 kernel (bootloader + SMP bring-up, page tables, GDT/IDT, ACPI/PIC, and device drivers for storage, network, USB, and PS/2). Not formally verified; pragmatic stage 2 prototype.
 
 **Provides:** Process isolation (none—single app), IPC (none—monolithic), interrupt handlers, memory management (OffsetPageTable + frame allocator, W^X enforced).
 
@@ -128,7 +128,7 @@
 
 **Provides:** Unified app host with shared filesystem/scheduler/world, floating window management, desktop launchers, terminal REPL, multi-pane layout, live metrics, persistent state.
 
-**Critical gaps:** (1) Terminal input routing missing (REPL is output-only on-screen; works in tests). (2) Shell/workspace modularity fragmented (`shell.rs` unused, `workspace.rs` unintegrated time-travel undo). (3) Composable UI (`Board`) only on Desktop (spec says all pages). (4) Live kernel enumeration missing in Explorer (seeded objects, not live). (5) Account identity hardcoded ("Jayden", not from identity system).
+**Critical gaps:** (1) Shell/workspace modularity fragmented (`shell.rs` unused, `workspace.rs` unintegrated time-travel undo). (2) Composable UI (`Board`) only on Desktop (spec says all pages). (3) Live kernel enumeration missing in Explorer (seeded objects, not live). (4) Account identity hardcoded ("Jayden", not from identity system). *(Terminal input routing is wired: the ASH shell and GUI desktop terminal are both interactive and test-covered.)*
 
 **Key contract:** All 9 apps share one `FileSystem`, `Scheduler`, `World`, and `Board`. Persistence uses double-buffered root + manifest. Window stacking is z-ordered; focus routing is hit-test → text field → app → shell hotkeys.
 
@@ -177,13 +177,12 @@
 | **Heterogeneous scheduling unimplemented** | GPU/NPU hints parsed but not routed; all compute on CPU thread | 🟠 HIGH |
 | **No generative compression** | Storage bloat; data-size exponential growth unaddressed (Stage 5 entirely deferred) | 🟠 HIGH |
 | **Authentication layer absent** | Native web has no accounts; legacy browser no passwordless/FIDO2; privacy model incomplete | 🟠 HIGH |
-| **Terminal input routing missing** | REPL output-only; interactive shell unusable on-screen | 🟠 HIGH |
 
 ---
 
 ## Deployment Readiness
 
-**Prototype maturity:** System boots to interactive 9-app shell with file persistence, browser, terminal (display-only), and editor on x86_64 (QEMU + metal tested). Memory safety (forbid unsafe in core) + capability model (monotonic enforcement) + determinism (replay-exact) are solid. Rendering (CPU), scheduler (SMP), storage (content-addressed), and crypto (PQ hybrid) all functional.
+**Prototype maturity:** System boots to interactive 9-app shell with file persistence, browser, interactive terminal, and editor on x86_64 (QEMU + metal tested). Memory safety (forbid unsafe in core) + capability model (monotonic enforcement) + determinism (replay-exact) are solid. Rendering (CPU), scheduler (SMP), storage (content-addressed), and crypto (PQ hybrid) all functional.
 
 **Not production-ready:** Missing formal verification, GPU acceleration, full agent orchestration, and account authentication. Spec's high-assurance claims (seL4-grade kernel, formal proofs, measured boot) remain aspirational; actual kernel is pragmatic prototype. Suitable for research/demo; requires significant hardening for production.
 

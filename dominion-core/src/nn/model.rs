@@ -1,4 +1,4 @@
-//! `nn::model` — load an DominionOS `.aem` model and run a decoder-only transformer
+//! `nn::model` — load a DominionOS `.aem` model and run a decoder-only transformer
 //! forward pass (Qwen2.5 / VibeThinker / Gemma families) entirely on dominion-core.
 //!
 //! This is the on-device LLM runtime: it parses the `.aem` container (a quantization-
@@ -230,6 +230,10 @@ fn parse_f64(b: &[u8]) -> f64 {
         }
         exp_val = if eneg { -e } else { e };
     }
+    // f64's dynamic range is ±308; any exponent past that already saturates to
+    // inf/0, so clamping is lossless and guards against a malicious header token
+    // like `1e2000000000` forcing billions of multiplications (DoS).
+    let exp_val = exp_val.clamp(-400, 400);
     let mut v = mant;
     if exp_val > 0 {
         for _ in 0..exp_val { v *= 10.0; }
@@ -572,29 +576,58 @@ impl AemModel {
             if inter == 0 || inter > MAX_INTER {
                 return Err("inter (gate_proj out-dim) out of range");
             }
+            let in_norm = raw.vecf(&format!("{p}input_layernorm.weight"))?;
+            let post_norm = raw.vecf(&format!("{p}post_attention_layernorm.weight"))?;
+            let qw = raw.weight_t(&format!("{p}self_attn.q_proj.weight"))?;
+            let kw = raw.weight_t(&format!("{p}self_attn.k_proj.weight"))?;
+            let vw = raw.weight_t(&format!("{p}self_attn.v_proj.weight"))?;
+            let ow = raw.weight_t(&format!("{p}self_attn.o_proj.weight"))?;
+            let up = raw.weight_t(&format!("{p}mlp.up_proj.weight"))?;
+            let down = raw.weight_t(&format!("{p}mlp.down_proj.weight"))?;
+            // Validate projection dims against config so forward() cannot index
+            // out of bounds or unwrap a mismatched Tensor::new on a crafted model.
+            if in_norm.len() != hidden || post_norm.len() != hidden {
+                return Err("layernorm weight length != hidden");
+            }
+            if qw.shape()[1] != qd { return Err("q_proj out-dim != n_heads*head_dim"); }
+            if kw.shape()[1] != kvd { return Err("k_proj out-dim != n_kv_heads*head_dim"); }
+            if vw.shape()[1] != kvd { return Err("v_proj out-dim != n_kv_heads*head_dim"); }
+            if ow.shape()[0] != qd || ow.shape()[1] != hidden {
+                return Err("o_proj shape mismatch (expect [qd, hidden])");
+            }
+            if up.shape()[1] != inter { return Err("up_proj out-dim != inter"); }
+            if down.shape()[1] != hidden { return Err("down_proj out-dim != hidden"); }
             layers.push(Layer {
-                in_norm: raw.vecf(&format!("{p}input_layernorm.weight"))?,
-                post_norm: raw.vecf(&format!("{p}post_attention_layernorm.weight"))?,
-                qw: raw.weight_t(&format!("{p}self_attn.q_proj.weight"))?,
+                in_norm,
+                post_norm,
                 qb: raw.bias(&format!("{p}self_attn.q_proj.bias"), qd)?,
-                kw: raw.weight_t(&format!("{p}self_attn.k_proj.weight"))?,
                 kb: raw.bias(&format!("{p}self_attn.k_proj.bias"), kvd)?,
-                vw: raw.weight_t(&format!("{p}self_attn.v_proj.weight"))?,
                 vb: raw.bias(&format!("{p}self_attn.v_proj.bias"), kvd)?,
-                ow: raw.weight_t(&format!("{p}self_attn.o_proj.weight"))?,
                 ob: raw.bias(&format!("{p}self_attn.o_proj.bias"), hidden)?,
+                qw,
+                kw,
+                vw,
+                ow,
                 gate,
-                up: raw.weight_t(&format!("{p}mlp.up_proj.weight"))?,
-                down: raw.weight_t(&format!("{p}mlp.down_proj.weight"))?,
+                up,
+                down,
                 inter,
             });
         }
-        Ok(AemModel { cfg, embed, final_norm: raw.vecf("model.norm.weight")?, lm_rows, layers })
+        let final_norm = raw.vecf("model.norm.weight")?;
+        if final_norm.len() != hidden {
+            return Err("final norm weight length != hidden");
+        }
+        Ok(AemModel { cfg, embed, final_norm, lm_rows, layers })
     }
 
     /// Forward `ids` at absolute positions starting at `pos_offset`; extends `kv`.
     /// Returns last-token logits. `spawn` parallelises the projections.
     pub fn forward(&self, ids: &[usize], kv: &mut KvCache, pos_offset: usize, spawn: &dyn Spawn) -> Vec<f64> {
+        // Empty input has no last token; guard the `(seq-1)*h` slice underflow below.
+        if ids.is_empty() {
+            return Vec::new();
+        }
         let c = &self.cfg;
         let h = c.hidden;
         let seq = ids.len();
@@ -721,6 +754,11 @@ impl AemModel {
 
     /// Greedy-generate `n_new` tokens after `prompt`. Returns the new token ids.
     pub fn generate(&self, prompt: &[usize], n_new: usize, spawn: &dyn Spawn) -> Vec<usize> {
+        // No prompt -> no logits to sample from; forward() would return empty and
+        // argmax on an empty slice would panic.
+        if prompt.is_empty() {
+            return Vec::new();
+        }
         let mut kv = KvCache::new(self.cfg.n_layers);
         let mut logits = self.forward(prompt, &mut kv, 0, spawn);
         let mut out = Vec::with_capacity(n_new);

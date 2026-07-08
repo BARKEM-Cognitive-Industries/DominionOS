@@ -2,7 +2,7 @@
   <rect width="800" height="500" fill="#0d1117"/>
 
   <!-- Title -->
-  <text x="400" y="36" text-anchor="middle" fill="#e6edf3" font-size="18" font-weight="bold">AetherOS — benchmark snapshot</text>
+  <text x="400" y="36" text-anchor="middle" fill="#e6edf3" font-size="18" font-weight="bold">DominionOS — benchmark snapshot</text>
   <text x="400" y="56" text-anchor="middle" fill="#8b949e" font-size="12">i7-12650H, WHPX (near-native), 8 vCPUs, 4 GiB RAM</text>
 
   <!-- Divider -->

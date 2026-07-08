@@ -230,11 +230,13 @@ impl ForeignProcess {
 
     /// Account a memory allocation against the ceiling.
     pub fn alloc(&mut self, bytes: usize) -> bool {
-        if self.mem_used + bytes > self.mem_limit {
-            return false;
+        match self.mem_used.checked_add(bytes) {
+            Some(t) if t <= self.mem_limit => {
+                self.mem_used = t;
+                true
+            }
+            _ => false,
         }
-        self.mem_used += bytes;
-        true
     }
 
     pub fn mem_used(&self) -> usize {

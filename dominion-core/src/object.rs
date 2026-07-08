@@ -454,18 +454,24 @@ impl ObjectGraph {
         }
 
         let head_len = r.read_u32_le_or("unexpected end of graph data")? as usize;
-        graph.head = Vec::with_capacity(head_len);
+        // Never size the reservation from the untrusted count alone: clamp it against the
+        // bytes actually left (each id is 32 bytes), so a bogus length prefix in a tiny
+        // image can't force a multi-gigabyte allocation. The per-element reads below stay
+        // bounds-checked, so an over-long-but-in-range count still fails there.
+        graph.head = Vec::with_capacity(head_len.min(r.remaining() / 32));
         for _ in 0..head_len {
             graph.head.push(r.read_hash_or("unexpected end of graph data")?);
         }
 
         let hist_len = r.read_u32_le_or("unexpected end of graph data")? as usize;
-        graph.history = Vec::with_capacity(hist_len);
+        // A commit serializes to at least 72 bytes (root + parent + live_len + msg_len),
+        // so clamp the reservation against the remaining bytes on that floor.
+        graph.history = Vec::with_capacity(hist_len.min(r.remaining() / 72));
         for _ in 0..hist_len {
             let root = r.read_hash_or("unexpected end of graph data")?;
             let parent = r.read_hash_or("unexpected end of graph data")?;
             let live_len = r.read_u32_le_or("unexpected end of graph data")? as usize;
-            let mut live = Vec::with_capacity(live_len);
+            let mut live = Vec::with_capacity(live_len.min(r.remaining() / 32));
             for _ in 0..live_len {
                 live.push(r.read_hash_or("unexpected end of graph data")?);
             }

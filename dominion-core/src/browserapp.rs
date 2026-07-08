@@ -1410,7 +1410,6 @@ mod tests {
             .find(|(_, href)| href.contains("product"))
             .cloned()
             .expect("product link must exist in layout");
-        drop(tab); // release borrow
         let inner = a.content_inner();
         // Link rect is in content coords; translate to viewport.
         let cx = inner.x + link.0.x + link.0.w / 2;

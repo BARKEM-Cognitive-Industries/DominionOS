@@ -1,4 +1,4 @@
-//! Unified discovery catalog — one searchable index over everything an Dominion
+//! Unified discovery catalog — one searchable index over everything a Dominion
 //! author can reach from the IDE: packages, libraries, drivers, programs, and
 //! sub-nodes. The IDE/LSP fold [`search`] results into autocomplete so a writer
 //! can find and wire any reachable building block without leaving the editor.

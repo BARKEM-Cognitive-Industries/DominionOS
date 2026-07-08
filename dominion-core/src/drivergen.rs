@@ -265,8 +265,31 @@ pub fn dst_replay_validate(spec: &DeviceSpec, tags: &dyn CapabilityTags) -> Resu
     // exercising the DMA path (a staged 64-byte payload) so buffer-using specs are
     // proven in-bounds before binding to real hardware.
     let probe = [0u8; 64];
+    // Size the probe args slice to the spec's arity — the highest `Arg(i)` index any
+    // program references — so multi-arg specs (e.g. LBA + length) exercise every slot
+    // during replay instead of faulting on `Arg(1)+`. Arg values don't affect MMIO or
+    // buffer bounds (those are static), so zeros are a safe, deterministic probe.
+    let mut max_arg: usize = 0;
+    let mut any_arg = false;
+    for steps in spec.programs.values() {
+        for step in steps {
+            let src = match step {
+                RegOp::Write { value, .. } => Some(value),
+                RegOp::BufStoreVal { value, .. } => Some(value),
+                _ => None,
+            };
+            if let Some(ValueSrc::Arg(i)) = src {
+                any_arg = true;
+                if *i > max_arg {
+                    max_arg = *i;
+                }
+            }
+        }
+    }
+    let arg_len = if any_arg { max_arg + 1 } else { 1 };
+    let probe_args = alloc::vec![0u64; arg_len];
     for op in spec.programs.keys() {
-        driver.run_io(op, &[0], &probe, &mut dev, &mut dma, tags)?;
+        driver.run_io(op, &probe_args, &probe, &mut dev, &mut dma, tags)?;
     }
     Ok(())
 }

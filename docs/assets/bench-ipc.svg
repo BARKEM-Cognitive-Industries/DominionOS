@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="400" font-family="monospace,sans-serif">
   <rect width="720" height="400" fill="#0d1117"/>
   <text x="360" y="34" text-anchor="middle" fill="#e6edf3" font-size="16" font-weight="bold">IPC Throughput (messages/second)</text>
-  <text x="360" y="54" text-anchor="middle" fill="#8b949e" font-size="12">AetherOS — real WHPX run, i7-12650H</text>
+  <text x="360" y="54" text-anchor="middle" fill="#8b949e" font-size="12">DominionOS — real WHPX run, i7-12650H</text>
 
   <!-- bars -->
   <!-- msg_passing: 133,266,744 → scale to 600px wide at 133M max -->

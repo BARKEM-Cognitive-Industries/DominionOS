@@ -13,6 +13,7 @@
 
 use crate::dma::{self, DmaRegion};
 use crate::pci;
+use crate::usbmsc::{self, Bot, BulkTransport, Xfer};
 use dominion_core::persist::{BlockDevice, BlockError, BLOCK_SIZE};
 
 /// Verbose bring-up logging (helps post-mortem on real hardware via the boot log).
@@ -57,11 +58,19 @@ const TRB_LINK: u32 = 6;
 const TRB_ENABLE_SLOT: u32 = 9;
 const TRB_ADDRESS_DEVICE: u32 = 11;
 const TRB_CONFIGURE_ENDPOINT: u32 = 12;
+const TRB_RESET_ENDPOINT: u32 = 14;
+const TRB_SET_TR_DEQUEUE: u32 = 16;
 const TRB_EVENT_TRANSFER: u32 = 32;
 const TRB_EVENT_CMD_COMPLETE: u32 = 33;
 
 const CC_SUCCESS: u32 = 1;
+const CC_STALL: u32 = 6; // endpoint halted (STALL) — triggers BOT error recovery
 const CC_SHORT_PACKET: u32 = 13;
+
+// ── standard USB request constants used for stall recovery ──
+const REQ_CLEAR_FEATURE: u8 = 1;
+const FEAT_ENDPOINT_HALT: u16 = 0; // wValue for Clear-Feature(ENDPOINT_HALT)
+const BM_STD_ENDPOINT_OUT: u8 = 0x02; // host->device, standard, recipient = endpoint
 
 #[inline]
 unsafe fn r32(a: u64) -> u32 {
@@ -99,6 +108,12 @@ impl Ring {
 
     fn phys_with_cycle(&self) -> u64 {
         self.region.phys | 1 // RCS / DCS bit
+    }
+
+    /// Physical address of the next slot the producer will write — used as the Set TR
+    /// Dequeue Pointer target when recovering a stalled endpoint.
+    fn enqueue_phys(&self) -> u64 {
+        self.region.phys + (self.enqueue as u64) * 16
     }
 
     /// Enqueue one TRB (the cycle bit is OR-ed in from the current PCS). Returns the
@@ -175,9 +190,11 @@ impl EventRing {
     }
 }
 
-/// A USB mass-storage device reached through xHCI: a [`BlockDevice`] over Bulk-Only
-/// Transport + SCSI.
-pub struct UsbMsc {
+/// The wire-level xHCI transfer plumbing for one addressed device: rings, doorbell, event
+/// ring, and the control/bulk primitives. The SCSI/BOT state machine in [`crate::usbmsc`]
+/// drives this through the [`BulkTransport`] trait, so all storage-protocol logic lives
+/// there and only the raw transfers live here.
+struct Transport {
     db: u64, // doorbell array base
     rt: u64, // runtime base (for ERDP updates)
     slot: u8,
@@ -190,12 +207,9 @@ pub struct UsbMsc {
     out_ring: Ring,
     data: DmaRegion, // bulk data bounce
     cbw: DmaRegion,  // CBW/CSW scratch
-    sectors: u64,
-    block_size: u32,
-    tag: u32,
 }
 
-impl UsbMsc {
+impl Transport {
     fn ring_doorbell(&self, slot: u8, target: u32) {
         unsafe { w32(self.db + slot as u64 * 4, target) };
     }
@@ -240,35 +254,75 @@ impl UsbMsc {
     }
 }
 
+/// Translate an xHCI transfer completion code into the transport-neutral [`Xfer`] the
+/// BOT state machine consumes.
+fn cc_to_xfer(cc: Option<u32>) -> Xfer {
+    match cc {
+        Some(CC_SUCCESS) => Xfer::Ok,
+        Some(CC_SHORT_PACKET) => Xfer::Short,
+        Some(CC_STALL) => Xfer::Stall,
+        _ => Xfer::Fail,
+    }
+}
+
+impl BulkTransport for Transport {
+    fn bulk_out(&mut self, phys: u64, len: u32) -> Xfer {
+        cc_to_xfer(self.bulk_buf(false, phys, len))
+    }
+    fn bulk_in(&mut self, phys: u64, len: u32) -> Xfer {
+        cc_to_xfer(self.bulk_buf(true, phys, len))
+    }
+    fn clear_stall(&mut self, in_ep: bool) -> bool {
+        self.clear_stall_ep(in_ep).is_some()
+    }
+    fn cbw_region(&self) -> (u64, u64) {
+        (self.cbw.phys, self.cbw.virt)
+    }
+    fn data_region(&self) -> (u64, u64, usize) {
+        (self.data.phys, self.data.virt, self.data.size as usize)
+    }
+}
+
+/// A USB mass-storage device reached through xHCI: a [`BlockDevice`] over Bulk-Only
+/// Transport + SCSI. Wire transfers go through [`Transport`]; the BOT/SCSI state machine
+/// is [`crate::usbmsc::Bot`]. The two are separate fields so a `BlockDevice` call can
+/// borrow the state machine and the transport at once without aliasing.
+pub struct UsbMsc {
+    xfer: Transport,
+    bot: Bot,
+}
+
+impl UsbMsc {
+    /// Exercise the SCSI command path for the boot self-test: issue INQUIRY and confirm
+    /// the capacity learned at probe. Returns true when the device answers INQUIRY and
+    /// reports a non-empty 512-byte-block medium.
+    pub fn self_test(&mut self) -> bool {
+        let inquiry_ok = self.bot.inquiry(&mut self.xfer).is_some();
+        inquiry_ok && self.bot.sectors > 0 && self.bot.block_size as usize == BLOCK_SIZE
+    }
+}
+
 impl BlockDevice for UsbMsc {
     fn block_count(&self) -> u64 {
-        self.sectors
+        self.bot.sectors
     }
     fn read_block(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         if buf.len() != BLOCK_SIZE {
             return Err(BlockError::BadLength);
         }
-        if lba >= self.sectors {
-            return Err(BlockError::OutOfRange);
-        }
-        self.scsi_rw(false, lba, 1)?;
-        buf.copy_from_slice(unsafe {
-            core::slice::from_raw_parts(self.data.virt as *const u8, BLOCK_SIZE)
-        });
-        Ok(())
+        self.bot.read_blocks(&mut self.xfer, lba, buf)
     }
     fn write_block(&mut self, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
         if buf.len() != BLOCK_SIZE {
             return Err(BlockError::BadLength);
         }
-        if lba >= self.sectors {
-            return Err(BlockError::OutOfRange);
-        }
-        unsafe {
-            core::slice::from_raw_parts_mut(self.data.virt as *mut u8, BLOCK_SIZE)
-                .copy_from_slice(buf);
-        }
-        self.scsi_rw(true, lba, 1)
+        self.bot.write_blocks(&mut self.xfer, lba, buf)
+    }
+    fn read_blocks(&mut self, start_lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+        self.bot.read_blocks(&mut self.xfer, start_lba, buf)
+    }
+    fn write_blocks(&mut self, start_lba: u64, buf: &[u8]) -> Result<(), BlockError> {
+        self.bot.write_blocks(&mut self.xfer, start_lba, buf)
     }
 }
 
@@ -407,7 +461,7 @@ fn bringup(mmio: u64) -> Option<UsbMsc> {
     }
     xlog!("[xhci] device on port {} speed {}", port, speed);
 
-    let mut dev = UsbMsc {
+    let mut xfer = Transport {
         db,
         rt,
         slot: 0,
@@ -420,29 +474,26 @@ fn bringup(mmio: u64) -> Option<UsbMsc> {
         out_ring: Ring::new()?,
         data: dma::alloc(8)?, // 32 KiB bounce
         cbw: dma::alloc(1)?,
-        sectors: 0,
-        block_size: BLOCK_SIZE as u32,
-        tag: 0,
     };
 
     // Enable a slot.
-    dev.cmd_ring.push(0, 0, TRB_ENABLE_SLOT << 10);
-    dev.ring_doorbell(0, 0);
-    let (cc, _, d3) = dev.wait_event(TRB_EVENT_CMD_COMPLETE)?;
+    xfer.cmd_ring.push(0, 0, TRB_ENABLE_SLOT << 10);
+    xfer.ring_doorbell(0, 0);
+    let (cc, _, d3) = xfer.wait_event(TRB_EVENT_CMD_COMPLETE)?;
     if cc != CC_SUCCESS {
         xlog!("[xhci] enable slot failed cc={}", cc);
         return None;
     }
-    dev.slot = ((d3 >> 24) & 0xFF) as u8;
-    xlog!("[xhci] slot {}", dev.slot);
-    if dev.slot == 0 {
+    xfer.slot = ((d3 >> 24) & 0xFF) as u8;
+    xlog!("[xhci] slot {}", xfer.slot);
+    if xfer.slot == 0 {
         return None;
     }
 
     // Output device context + input context for Address Device.
     let out_ctx = dma::alloc(1)?;
     let in_ctx = dma::alloc(1)?;
-    unsafe { w64(dcbaa.virt + dev.slot as u64 * 8, out_ctx.phys) };
+    unsafe { w64(dcbaa.virt + xfer.slot as u64 * 8, out_ctx.phys) };
 
     // Input control context: add slot + EP0 (A0, A1).
     unsafe { w32(in_ctx.virt + 0x04, 0b11) };
@@ -466,11 +517,11 @@ fn bringup(mmio: u64) -> Option<UsbMsc> {
         // dword1: EP type = Control (4) in bits 3-5, CErr=3 in bits 1-2, MaxPacket in 16-31.
         w32(ep0_ctx + 4, (4u32 << 3) | (3 << 1) | ((mps0 as u32) << 16));
         // TR dequeue pointer (dword2/3) with DCS=1.
-        w64(ep0_ctx + 8, dev.ep0_ring.phys_with_cycle());
+        w64(ep0_ctx + 8, xfer.ep0_ring.phys_with_cycle());
     }
-    dev.cmd_ring.push(in_ctx.phys, 0, (TRB_ADDRESS_DEVICE << 10) | ((dev.slot as u32) << 24));
-    dev.ring_doorbell(0, 0);
-    let (cc, _, _) = dev.wait_event(TRB_EVENT_CMD_COMPLETE)?;
+    xfer.cmd_ring.push(in_ctx.phys, 0, (TRB_ADDRESS_DEVICE << 10) | ((xfer.slot as u32) << 24));
+    xfer.ring_doorbell(0, 0);
+    let (cc, _, _) = xfer.wait_event(TRB_EVENT_CMD_COMPLETE)?;
     if cc != CC_SUCCESS {
         xlog!("[xhci] address device failed cc={}", cc);
         return None;
@@ -478,8 +529,8 @@ fn bringup(mmio: u64) -> Option<UsbMsc> {
     xlog!("[xhci] addressed");
 
     // GET_DESCRIPTOR(config, 9 bytes) then full config to find the MSC interface.
-    let cfg = dev.data;
-    if dev.control_in(0x80, 6, 0x0200, 0, 9, cfg.phys).is_none() {
+    let cfg = xfer.data;
+    if xfer.control_in(0x80, 6, 0x0200, 0, 9, cfg.phys).is_none() {
         return None;
     }
     let total_len = u16::from_le_bytes(unsafe {
@@ -489,7 +540,7 @@ fn bringup(mmio: u64) -> Option<UsbMsc> {
         ]
     }) as u16;
     let want = (total_len as u32).min(cfg.size as u32);
-    if dev.control_in(0x80, 6, 0x0200, 0, want as u16, cfg.phys).is_none() {
+    if xfer.control_in(0x80, 6, 0x0200, 0, want as u16, cfg.phys).is_none() {
         return None;
     }
     // Parse descriptors for a Mass-Storage (class 8, subclass 6 SCSI, proto 0x50 BOT)
@@ -509,8 +560,10 @@ fn bringup(mmio: u64) -> Option<UsbMsc> {
             break;
         }
         if dtype == 0x04 && i + 9 <= buf.len() {
-            // interface descriptor
-            is_msc = buf[i + 5] == 0x08 && buf[i + 7] == 0x50; // class MSC, proto BOT
+            // interface descriptor: match class 0x08 / subclass 0x06 (SCSI) / proto 0x50 (BOT)
+            is_msc = buf[i + 5] == usbmsc::MSC_CLASS
+                && buf[i + 6] == usbmsc::MSC_SUBCLASS_SCSI
+                && buf[i + 7] == usbmsc::MSC_PROTO_BOT;
         } else if dtype == 0x05 && is_msc && i + 7 <= buf.len() {
             // endpoint descriptor
             let addr = buf[i + 2];
@@ -533,56 +586,72 @@ fn bringup(mmio: u64) -> Option<UsbMsc> {
         xlog!("[xhci] no bulk endpoints found (msc={})", is_msc);
         return None;
     }
-    dev.ep_in_dci = (in_ep as u32 * 2) + 1;
-    dev.ep_out_dci = out_ep as u32 * 2;
+    xfer.ep_in_dci = (in_ep as u32 * 2) + 1;
+    xfer.ep_out_dci = out_ep as u32 * 2;
     xlog!("[xhci] bulk in ep{} out ep{}", in_ep, out_ep);
 
     // SET_CONFIGURATION.
-    if dev.control_out(0x00, 9, cfg_value as u16, 0).is_none() {
+    if xfer.control_out(0x00, 9, cfg_value as u16, 0).is_none() {
         return None;
     }
 
     // Configure Endpoint: add the two bulk endpoints.
     unsafe {
         core::ptr::write_bytes(in_ctx.virt as *mut u8, 0, 4096);
-        let add = (1u32 << dev.ep_in_dci) | (1u32 << dev.ep_out_dci);
+        let add = (1u32 << xfer.ep_in_dci) | (1u32 << xfer.ep_out_dci);
         w32(in_ctx.virt + 0x04, add | 1); // A0 (slot) + the two EPs
         // Slot context: context entries = max DCI.
-        let max_dci = dev.ep_in_dci.max(dev.ep_out_dci);
+        let max_dci = xfer.ep_in_dci.max(xfer.ep_out_dci);
         w32(in_ctx.virt + ctx_size, (max_dci << 27) | (speed << 20));
         w32(in_ctx.virt + ctx_size + 4, (port as u32) << 16);
         // Bulk OUT EP context (type 2), bulk IN EP context (type 6).
-        let out_ctx_ep = in_ctx.virt + ctx_size * (1 + dev.ep_out_dci as u64);
+        let out_ctx_ep = in_ctx.virt + ctx_size * (1 + xfer.ep_out_dci as u64);
         w32(out_ctx_ep + 4, (2u32 << 3) | (3 << 1) | ((out_mps as u32) << 16));
-        w64(out_ctx_ep + 8, dev.out_ring.phys_with_cycle());
-        let in_ctx_ep = in_ctx.virt + ctx_size * (1 + dev.ep_in_dci as u64);
+        w64(out_ctx_ep + 8, xfer.out_ring.phys_with_cycle());
+        let in_ctx_ep = in_ctx.virt + ctx_size * (1 + xfer.ep_in_dci as u64);
         w32(in_ctx_ep + 4, (6u32 << 3) | (3 << 1) | ((in_mps as u32) << 16));
-        w64(in_ctx_ep + 8, dev.in_ring.phys_with_cycle());
+        w64(in_ctx_ep + 8, xfer.in_ring.phys_with_cycle());
     }
-    dev.cmd_ring.push(in_ctx.phys, 0, (TRB_CONFIGURE_ENDPOINT << 10) | ((dev.slot as u32) << 24));
-    dev.ring_doorbell(0, 0);
-    let (cc, _, _) = dev.wait_event(TRB_EVENT_CMD_COMPLETE)?;
+    xfer.cmd_ring.push(in_ctx.phys, 0, (TRB_CONFIGURE_ENDPOINT << 10) | ((xfer.slot as u32) << 24));
+    xfer.ring_doorbell(0, 0);
+    let (cc, _, _) = xfer.wait_event(TRB_EVENT_CMD_COMPLETE)?;
     if cc != CC_SUCCESS {
         xlog!("[xhci] configure endpoint failed cc={}", cc);
         return None;
     }
     xlog!("[xhci] endpoints configured");
 
+    // Bind the SCSI/BOT state machine to the configured bulk endpoints.
+    let mut bot = Bot::new();
+
+    // TEST UNIT READY: some devices answer "not ready" until spun up, so poll a bounded
+    // number of times. Non-fatal — READ CAPACITY below is the real gate.
+    for _ in 0..16 {
+        if bot.test_unit_ready(&mut xfer) {
+            break;
+        }
+    }
+
+    // INQUIRY — informational; logs the SCSI peripheral device type for the boot log.
+    if let Some(inq) = bot.inquiry(&mut xfer) {
+        xlog!("[xhci] INQUIRY ok, peripheral-device-type {:#x}", inq[0] & 0x1F);
+    }
+
     // SCSI READ CAPACITY(10) → block count + size.
-    if !dev.read_capacity() {
+    if !bot.read_capacity(&mut xfer) {
         xlog!("[xhci] READ CAPACITY failed");
         return None;
     }
     xlog!(
         "[xhci] USB disk: {} sectors x {} bytes ({} MiB)",
-        dev.sectors,
-        dev.block_size,
-        dev.sectors * dev.block_size as u64 / (1024 * 1024)
+        bot.sectors,
+        bot.block_size,
+        bot.sectors * bot.block_size as u64 / (1024 * 1024)
     );
-    Some(dev)
+    Some(UsbMsc { xfer, bot })
 }
 
-impl UsbMsc {
+impl Transport {
     /// A control IN transfer (Setup/Data-IN/Status-OUT) on EP0 into `data_phys`.
     fn control_in(&mut self, bm: u8, req: u8, value: u16, index: u16, len: u16, data_phys: u64) -> Option<()> {
         let setup_lo = (bm as u64)
@@ -621,13 +690,8 @@ impl UsbMsc {
         }
     }
 
-    /// One bulk transfer of `len` bytes to/from the data bounce buffer.
-    fn bulk(&mut self, dir_in: bool, len: u32) -> Option<u32> {
-        let phys = self.data.phys;
-        self.bulk_buf(dir_in, phys, len)
-    }
-
     /// Bulk transfer of `len` bytes to/from a given physical buffer (Normal TRB + IOC).
+    /// Returns the xHCI completion code, or `None` on timeout / event mismatch.
     fn bulk_buf(&mut self, dir_in: bool, phys: u64, len: u32) -> Option<u32> {
         let ctl = (TRB_NORMAL << 10) | (1 << 5);
         let trb_phys = if dir_in {
@@ -653,72 +717,43 @@ impl UsbMsc {
         Some(cc)
     }
 
-    /// Run one SCSI command via Bulk-Only Transport: CBW → (data) → CSW.
-    fn bot(&mut self, cdb: &[u8], data_len: u32, write: bool) -> bool {
-        self.tag = self.tag.wrapping_add(1);
-        // Build the 31-byte CBW at the start of the cbw scratch region.
-        let cbw = unsafe { core::slice::from_raw_parts_mut(self.cbw.virt as *mut u8, 31) };
-        cbw.fill(0);
-        cbw[0..4].copy_from_slice(&0x4342_5355u32.to_le_bytes()); // "USBC"
-        cbw[4..8].copy_from_slice(&self.tag.to_le_bytes());
-        cbw[8..12].copy_from_slice(&data_len.to_le_bytes());
-        cbw[12] = if write { 0x00 } else { 0x80 }; // direction flag
-        cbw[13] = 0; // LUN
-        cbw[14] = cdb.len() as u8;
-        cbw[15..15 + cdb.len()].copy_from_slice(cdb);
-        if self.bulk_buf(false, self.cbw.phys, 31).is_none() {
-            return false;
-        }
-        // Data stage.
-        if data_len > 0 {
-            let cc = self.bulk(!write, data_len);
-            if !matches!(cc, Some(CC_SUCCESS) | Some(CC_SHORT_PACKET)) {
-                return false;
-            }
-        }
-        // CSW (13 bytes) into the cbw scratch (offset 64 to keep clear of the CBW).
-        let csw_phys = self.cbw.phys + 64;
-        if self.bulk_buf(true, csw_phys, 13).is_none() {
-            return false;
-        }
-        let csw = unsafe { core::slice::from_raw_parts((self.cbw.virt + 64) as *const u8, 13) };
-        let sig = u32::from_le_bytes([csw[0], csw[1], csw[2], csw[3]]);
-        sig == 0x5342_5355 && csw[12] == 0 // "USBS" + status 0 (passed)
-    }
+    /// Recover a halted bulk endpoint (the BOT stall-recovery path). Per xHCI: issue a
+    /// Reset Endpoint command, send the device a Clear-Feature(ENDPOINT_HALT), then Set TR
+    /// Dequeue Pointer so the controller resumes at the ring's next slot. `in_ep` selects
+    /// the bulk IN endpoint, else the bulk OUT endpoint.
+    fn clear_stall_ep(&mut self, in_ep: bool) -> Option<()> {
+        let dci = if in_ep { self.ep_in_dci } else { self.ep_out_dci };
+        // USB endpoint address for the Clear-Feature wIndex: number + direction bit.
+        let ep_num = if in_ep { (self.ep_in_dci - 1) / 2 } else { self.ep_out_dci / 2 };
+        let windex = if in_ep { ep_num | 0x80 } else { ep_num };
 
-    fn read_capacity(&mut self) -> bool {
-        let cdb = [0x25u8, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // READ CAPACITY(10)
-        if !self.bot(&cdb, 8, false) {
-            return false;
+        // 1. Reset Endpoint command (clears the controller's Halted state).
+        self.cmd_ring.push(0, 0, (TRB_RESET_ENDPOINT << 10) | (dci << 16) | ((self.slot as u32) << 24));
+        self.ring_doorbell(0, 0);
+        let (cc, _, _) = self.wait_event(TRB_EVENT_CMD_COMPLETE)?;
+        if cc != CC_SUCCESS {
+            xlog!("[xhci] reset endpoint (dci {}) failed cc={}", dci, cc);
+            return None;
         }
-        let d = unsafe { core::slice::from_raw_parts(self.data.virt as *const u8, 8) };
-        let last_lba = u32::from_be_bytes([d[0], d[1], d[2], d[3]]) as u64;
-        let bsize = u32::from_be_bytes([d[4], d[5], d[6], d[7]]);
-        self.sectors = last_lba + 1;
-        self.block_size = if bsize == 0 { 512 } else { bsize };
-        self.sectors != 0 && self.block_size as usize == BLOCK_SIZE
-    }
 
-    fn scsi_rw(&mut self, write: bool, lba: u64, count: u16) -> Result<(), BlockError> {
-        let op = if write { 0x2Au8 } else { 0x28u8 }; // WRITE(10) / READ(10)
-        let lba32 = lba as u32;
-        let cdb = [
-            op,
-            0,
-            (lba32 >> 24) as u8,
-            (lba32 >> 16) as u8,
-            (lba32 >> 8) as u8,
-            lba32 as u8,
-            0,
-            (count >> 8) as u8,
-            count as u8,
-            0,
-        ];
-        let bytes = count as u32 * BLOCK_SIZE as u32;
-        if self.bot(&cdb, bytes, write) {
-            Ok(())
+        // 2. Clear-Feature(ENDPOINT_HALT) to the device, resetting its data toggle.
+        self.control_out(BM_STD_ENDPOINT_OUT, REQ_CLEAR_FEATURE, FEAT_ENDPOINT_HALT, windex as u16)?;
+
+        // 3. Set TR Dequeue Pointer to the ring's current enqueue position, with the
+        //    producer cycle state as the Dequeue Cycle State.
+        let (dq_phys, dcs) = if in_ep {
+            (self.in_ring.enqueue_phys(), self.in_ring.pcs)
         } else {
-            Err(BlockError::DeviceFault)
+            (self.out_ring.enqueue_phys(), self.out_ring.pcs)
+        };
+        let ptr = dq_phys | (dcs as u64);
+        self.cmd_ring.push(ptr, 0, (TRB_SET_TR_DEQUEUE << 10) | (dci << 16) | ((self.slot as u32) << 24));
+        self.ring_doorbell(0, 0);
+        let (cc, _, _) = self.wait_event(TRB_EVENT_CMD_COMPLETE)?;
+        if cc != CC_SUCCESS {
+            xlog!("[xhci] set TR dequeue (dci {}) failed cc={}", dci, cc);
+            return None;
         }
+        Some(())
     }
 }

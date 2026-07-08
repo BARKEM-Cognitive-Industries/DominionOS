@@ -67,6 +67,10 @@ pub struct NvmeDisk {
     data: DmaRegion,
     cid: u16,
     sectors: u64,
+    /// Set once a command times out: the CQ is then desynchronized (the stale completion
+    /// was never consumed), so no further command may be issued or it would read the wrong
+    /// status. The disk is treated as permanently faulted.
+    faulted: bool,
 }
 
 impl NvmeDisk {
@@ -122,13 +126,24 @@ impl NvmeDisk {
     }
 
     fn rw(&mut self, write: bool, lba: u64, count: u16) -> Result<(), BlockError> {
+        // A prior timeout left the CQ desynchronized; refuse to issue further commands.
+        if self.faulted {
+            return Err(BlockError::DeviceFault);
+        }
         let opcode = if write { 0x01 } else { 0x02 };
         let prp1 = self.data.phys;
         let mut s = self.sqe(opcode, 1, prp1);
         s[10] = lba as u32; // SLBA low
         s[11] = (lba >> 32) as u32; // SLBA high
         s[12] = (count.saturating_sub(1)) as u32; // NLB (0-based)
-        if self.submit(1, &s) != 0 {
+        let status = self.submit(1, &s);
+        if status == 0x7FF {
+            // Timeout: the completion was never consumed, so the CQ head/phase are now
+            // stale. Mark the disk faulted so a later stale completion can't be
+            // mis-attributed to a subsequent command.
+            self.faulted = true;
+        }
+        if status != 0 {
             return Err(BlockError::DeviceFault);
         }
         Ok(())
@@ -268,6 +283,7 @@ pub fn probe() -> Option<NvmeDisk> {
         data,
         cid: 0,
         sectors: 0,
+        faulted: false,
     };
 
     // Identify Namespace 1 (CNS=0) → NSZE (total sectors) at bytes 0..8.

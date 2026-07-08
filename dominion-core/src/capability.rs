@@ -1,4 +1,4 @@
-//! Capability-based security (SRS Stage 2 & 3, and the Aether memory model).
+//! Capability-based security (SRS Stage 2 & 3, and the Dominion memory model).
 //!
 //! Real CHERI hardware tags 128-bit capabilities out-of-band. We have no CHERI
 //! silicon under QEMU, so this module *models* the same algebra in safe Rust and

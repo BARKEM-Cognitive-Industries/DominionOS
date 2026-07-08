@@ -306,8 +306,15 @@ impl KernelTransport {
             gw_mac.0[0], gw_mac.0[1], gw_mac.0[2], gw_mac.0[3], gw_mac.0[4], gw_mac.0[5]
         );
 
-        let id = self.next_ident();
-        let src_port = self.alloc_port();
+        // Randomize the DNS transaction id and UDP source port from the hardware
+        // TRNG so an off-path attacker cannot predict them (fall back to the
+        // sequential allocators only if the entropy source is unavailable).
+        let id = crate::entropy::random_u64()
+            .map(|r| r as u16)
+            .unwrap_or_else(|| self.next_ident());
+        let src_port = crate::entropy::random_u64()
+            .map(|r| 49152u16 + (r % 16384) as u16)
+            .unwrap_or_else(|| self.alloc_port());
 
         // Build the DNS payload once; re-wrap in new IP packets on each send (new ident).
         let dns_query = build_dns_query(id, host);
@@ -334,7 +341,7 @@ impl KernelTransport {
         while ticks() < deadline {
             if let Some(f) = self.poll() {
                 frames_seen += 1;
-                if let Some(addr) = self.parse_dns_reply_verbose(&f, id, frames_seen) {
+                if let Some(addr) = self.parse_dns_reply_verbose(&f, id, src_port, frames_seen) {
                     crate::serial_println!(
                         "[dns] {} resolved to {}.{}.{}.{} (frame#{} retry#{})",
                         host,
@@ -373,13 +380,13 @@ impl KernelTransport {
     /// slirp sometimes responds from a different virtual IP than the configured
     /// DNS server, and that strict check was silently dropping every reply.
     #[allow(dead_code)]
-    fn parse_dns_reply(&self, frame: &[u8], id: u16) -> Option<Ipv4Addr> {
-        self.parse_dns_reply_verbose(frame, id, 0)
+    fn parse_dns_reply(&self, frame: &[u8], id: u16, src_port: u16) -> Option<Ipv4Addr> {
+        self.parse_dns_reply_verbose(frame, id, src_port, 0)
     }
 
     /// Like `parse_dns_reply` but logs every non-matching frame to help debug
     /// QEMU slirp quirks. `frame_n` is just a counter for the log.
-    fn parse_dns_reply_verbose(&self, frame: &[u8], id: u16, frame_n: u32) -> Option<Ipv4Addr> {
+    fn parse_dns_reply_verbose(&self, frame: &[u8], id: u16, src_port: u16, frame_n: u32) -> Option<Ipv4Addr> {
         let eth = parse_ethernet(frame)?;
         if eth.ethertype != ETHERTYPE_IPV4 {
             crate::serial_println!(
@@ -406,7 +413,16 @@ impl KernelTransport {
             );
             return None;
         }
-        // UDP from port 53 — this is a DNS reply candidate.
+        // Bind the reply to the 4-tuple: it must be addressed to the exact source
+        // port we allocated for this query, else drop it (anti-spoofing).
+        if udp.dst_port != src_port {
+            crate::serial_println!(
+                "[dns] frame#{}: UDP dst_port={} != our src_port={} (not our query)",
+                frame_n, udp.dst_port, src_port
+            );
+            return None;
+        }
+        // UDP from port 53 to our query port — this is a DNS reply candidate.
         crate::serial_println!(
             "[dns] frame#{}: DNS reply from {}.{}.{}.{} len={}",
             frame_n,
@@ -557,15 +573,16 @@ impl KernelTransport {
         // Send up to cwnd_bytes of data, tracking in-flight bytes. After each ACK
         // we advance the window; after timeout we signal loss.
         {
-            let mut in_flight: usize = 0;
-            let mut send_offset: usize = 0;
             let total = request.len();
+            let mut una_off: usize = 0;     // request bytes cumulatively ACKed
+            let mut send_offset: usize = 0; // request bytes handed to send_tcp
+            let mut loss_retries: u32 = 0;
 
             while send_offset < total {
                 let cwnd = self.cubic.cwnd_bytes();
 
-                // Send segments up to the current cwnd.
-                while send_offset < total && in_flight < cwnd {
+                // Send segments up to the current cwnd (in-flight = send_offset - una_off).
+                while send_offset < total && send_offset - una_off < cwnd {
                     let end = (send_offset + MAX_SEG).min(total);
                     let chunk = &request[send_offset..end];
                     self.send_tcp(
@@ -573,7 +590,6 @@ impl KernelTransport {
                         snd_nxt, rcv_nxt, TCP_PSH | TCP_ACK, chunk,
                     );
                     snd_nxt = snd_nxt.wrapping_add(chunk.len() as u32);
-                    in_flight += chunk.len();
                     send_offset += chunk.len();
                 }
 
@@ -597,22 +613,28 @@ impl KernelTransport {
                         return Err(FetchError::Connect(host.into()));
                     }
                     if seg.flags & TCP_ACK != 0 {
-                        // How many bytes did the peer acknowledge?
-                        let acked = seg.ack.wrapping_sub(iss.wrapping_add(1)) as usize;
-                        if acked <= in_flight {
-                            in_flight = in_flight.saturating_sub(acked);
-                        } else {
-                            in_flight = 0;
+                        // Cumulative ACK: absolute count of request bytes acknowledged.
+                        let acked =
+                            (seg.ack.wrapping_sub(iss.wrapping_add(1)) as usize).min(total);
+                        if acked > una_off {
+                            una_off = acked;
+                            self.cubic.on_ack(RTT_ESTIMATE);
+                            got_ack = true;
+                            break;
                         }
-                        self.cubic.on_ack(RTT_ESTIMATE);
-                        got_ack = true;
-                        break;
                     }
                 }
                 if !got_ack {
-                    // Timeout: signal loss to CUBIC and continue (best-effort).
+                    // Timeout: signal loss and retransmit the unacked window by rolling
+                    // send_offset/snd_nxt back to the last cumulatively-ACKed byte, so
+                    // segments that were sent but never ACKed are actually resent.
                     self.cubic.on_loss();
-                    in_flight = 0;
+                    send_offset = una_off;
+                    snd_nxt = iss.wrapping_add(1).wrapping_add(una_off as u32);
+                    loss_retries += 1;
+                    if loss_retries >= 8 {
+                        break; // best-effort cap: stop retransmitting, read what we can
+                    }
                 }
             }
         }
@@ -754,6 +776,24 @@ impl KernelTransport {
         }
         for i in 0..6 {
             e[i] ^= self.mac.0[i];
+        }
+        // Fold in the hardware TRNG so the handshake secrets are not a deterministic
+        // function of the (public) MAC and a single TSC read. Prefer a conditioned,
+        // health-tested 32-byte seed; fall back to the seeded DRNG, then to the
+        // TSC/MAC material above if no entropy source is available.
+        if let Some(seed) = crate::entropy::conditioned_seed() {
+            for i in 0..32 {
+                e[i] ^= seed[i];
+            }
+        } else {
+            for i in 0..4 {
+                if let Some(r) = crate::entropy::random_u64() {
+                    let b = r.to_le_bytes();
+                    for j in 0..8 {
+                        e[i * 8 + j] ^= b[j];
+                    }
+                }
+            }
         }
         e
     }

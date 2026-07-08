@@ -41,8 +41,29 @@ use alloc::vec::Vec;
 
 // ─────────────────── number theory helpers ───────────────────
 
+/// Modular multiply that never overflows `u128`, for any modulus `m` up to
+/// `u128::MAX`.
+///
+/// The naive `(a % m) * (b % m) % m` only fits `u128` while `m < 2^64`; for the
+/// large safe-prime groups the module docs invite for production (`p` well above
+/// `2^64`) the product overflows — a debug panic or a release-build silent
+/// wraparound producing cryptographically wrong group elements. This binary
+/// (double-and-add) form keeps every intermediate `< m`, using overflow-safe
+/// modular addition, so it stays correct across the whole representable range.
 fn mulmod(a: u128, b: u128, m: u128) -> u128 {
-    (a % m) * (b % m) % m
+    let mut a = a % m;
+    let mut b = b % m;
+    let mut acc = 0u128;
+    while b > 0 {
+        if b & 1 == 1 {
+            // acc = (acc + a) % m, computed without overflowing u128.
+            acc = if a >= m - acc { a - (m - acc) } else { acc + a };
+        }
+        // a = (a + a) % m, computed without overflowing u128.
+        a = if a >= m - a { a - (m - a) } else { a + a };
+        b >>= 1;
+    }
+    acc
 }
 
 fn modpow(mut base: u128, mut exp: u128, m: u128) -> u128 {

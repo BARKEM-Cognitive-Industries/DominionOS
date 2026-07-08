@@ -100,13 +100,19 @@ pub struct DeniableVault {
     duress_action: DuressAction,
     store: Vec<Record>,
     next_nonce: u64,
+    /// Secret, master-derived seed used to generate opaque, unlinkable per-record nonces,
+    /// so a stored nonce leaks neither insertion order nor the per-domain record count.
+    nonce_seed: [u8; 32],
+    /// Secret, master-derived key sealing the indistinguishable slack records that pad the
+    /// store; its tag matches neither domain, so `read_with_key` ignores slack.
+    slack_key: [u8; 32],
 }
 
 impl DeniableVault {
     /// Create a vault from one master seed and two passphrases. The duress passphrase opens the
     /// decoy; the real passphrase opens the hidden domain. No master decrypt key is stored.
     pub fn new(master_seed: &[u8], duress_pass: &[u8], real_pass: &[u8], duress_action: DuressAction) -> DeniableVault {
-        DeniableVault {
+        let mut v = DeniableVault {
             decoy_key: derive_key(master_seed, b"decoy"),
             hidden_key: derive_key(master_seed, b"hidden"),
             duress_hash: Hash256::of(duress_pass),
@@ -114,7 +120,15 @@ impl DeniableVault {
             duress_action,
             store: Vec::new(),
             next_nonce: 1,
-        }
+            nonce_seed: derive_key(master_seed, b"nonce-seed"),
+            slack_key: derive_key(master_seed, b"slack"),
+        };
+        // Pre-seed the shared store with indistinguishable slack records keyed to neither
+        // domain. Because the store is never empty of non-domain records, an adversary who
+        // is compelled the decoy key sees store_size() > decoy_count as the expected state:
+        // the surplus records could all be slack, so they prove nothing about a hidden domain.
+        v.seed_slack();
+        v
     }
 
     fn key_for(&self, kind: DomainKind) -> [u8; 32] {
@@ -133,13 +147,55 @@ impl DeniableVault {
         Hash256::of(&input)
     }
 
+    /// A fresh, opaque per-record nonce. A private monotonic counter guarantees uniqueness
+    /// (so the keystream is never reused within a domain), but the *stored* nonce is the
+    /// counter hashed under the secret `nonce_seed`, so it looks random: an adversary cannot
+    /// recover the counter and therefore learns nothing about record order or counts.
+    fn fresh_nonce(&mut self) -> u64 {
+        let counter = self.next_nonce;
+        self.next_nonce += 1;
+        let mut input = Vec::with_capacity(48);
+        input.extend_from_slice(b"AE-NONCE");
+        input.extend_from_slice(&self.nonce_seed);
+        input.extend_from_slice(&counter.to_le_bytes());
+        let h = Hash256::of(&input).0;
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&h[..8]);
+        u64::from_le_bytes(b)
+    }
+
+    /// Add a record and keep the store ordered by its opaque nonce. Sorting by the
+    /// random-looking nonce erases insertion order from the Vec, so slack and hidden records
+    /// interleave indistinguishably instead of forming a tell-tale prefix/suffix block.
+    fn insert_record(&mut self, record: Record) {
+        self.store.push(record);
+        self.store.sort_by_key(|r| r.nonce);
+    }
+
+    /// Populate the store with seed-derived slack records. Each is sealed under `slack_key`,
+    /// so its tag matches neither the decoy nor the hidden domain and `read_with_key` skips
+    /// it, while at rest it is indistinguishable from a real domain record.
+    fn seed_slack(&mut self) {
+        let count = 4 + (self.nonce_seed[0] as usize % 8);
+        for i in 0..count {
+            let nonce = self.fresh_nonce();
+            // Plausible, varying length so slack blobs resemble real records.
+            let len = 16 + (self.slack_key[i % 32] as usize % 48);
+            let filler = alloc::vec![0u8; len];
+            let tag = Self::tag(&self.slack_key, nonce);
+            let ciphertext = seal(&self.slack_key, nonce, &filler);
+            self.insert_record(Record { nonce, tag, ciphertext });
+        }
+    }
+
     /// Store `plaintext` into `kind`'s domain. The record is added to the shared store as opaque
     /// ciphertext; an observer cannot tell which domain it belongs to.
     pub fn put(&mut self, kind: DomainKind, plaintext: &[u8]) {
         let key = self.key_for(kind);
-        let nonce = self.next_nonce;
-        self.next_nonce += 1;
-        self.store.push(Record { nonce, tag: Self::tag(&key, nonce), ciphertext: seal(&key, nonce, plaintext) });
+        let nonce = self.fresh_nonce();
+        let tag = Self::tag(&key, nonce);
+        let ciphertext = seal(&key, nonce, plaintext);
+        self.insert_record(Record { nonce, tag, ciphertext });
     }
 
     /// Read every object visible to `key` — i.e. the records whose tag matches this domain.
@@ -231,9 +287,10 @@ mod tests {
     #[test]
     fn hidden_existence_is_unprovable_from_the_decoy() {
         let v = vault();
-        // 3 opaque records in the store; the decoy holder can read 1 and cannot prove the other
-        // 2 belong to a hidden domain (they're indistinguishable from random slack).
-        assert_eq!(v.store_size(), 3);
+        // The store holds the 1 decoy + 2 hidden records plus indistinguishable slack, so its
+        // size deliberately exceeds the decoy count. The decoy holder can read 1 record and
+        // cannot prove any surplus record belongs to a hidden domain (it could be slack).
+        assert!(v.store_size() > 3);
         assert!(!v.hidden_existence_provable_from(b"duress-pin"));
     }
 

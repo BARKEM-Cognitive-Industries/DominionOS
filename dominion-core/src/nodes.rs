@@ -259,11 +259,10 @@ impl NodeGraph {
             let from_node = nodes.iter().find(|n| n.id == w.from);
             let to_node = nodes.iter().find(|n| n.id == w.to);
             if let (Some(f), Some(t)) = (from_node, to_node) {
-                // Output port is on the right side of f, input port on the left of t.
-                let fx = f.x + self.pan_x + 160 + PORT_R; // right edge of node + pan
-                let fy = f.y + self.pan_y + 24;
-                let tx = t.x + self.pan_x - PORT_R;
-                let ty = t.y + self.pan_y + 24;
+                // Endpoints must match what view() draws: the output anchor of f
+                // and the input anchor of t (which apply w, h/2, and pan).
+                let (fx, fy) = self.out_anchor(f);
+                let (tx, ty) = self.in_anchor(t);
                 // Check several points along the wire (at t=0.25, 0.5, 0.75).
                 for k in 1..=3 {
                     let t_param = k as i32;

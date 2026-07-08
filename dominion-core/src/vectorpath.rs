@@ -375,8 +375,10 @@ pub fn rasterize_path(
         },
     };
 
-    let mut binner = CoarseBinner::new(width, height, VECTOR_TILE_SIZE);
-    binner.bin_segments(&segments);
+    // The fine pass (accumulate_all) re-scans all segments per scanline and only
+    // reads binner.tile_size, so the coarse bin_segments pass would be pure wasted
+    // work (O(segments*tiles) plus per-tile allocations) here — skip it.
+    let binner = CoarseBinner::new(width, height, VECTOR_TILE_SIZE);
     let mut fine = FineAccumulator::new(width, height);
     let color = pack_rgba(fill.color[0], fill.color[1], fill.color[2], fill.color[3]);
     fine.accumulate_all(&binner, &segments, &fill, color);
@@ -401,18 +403,19 @@ pub fn composite_path(
 // Alpha blending
 // ---------------------------------------------------------------------------
 
-/// Alpha-blend src over dst (premultiplied alpha).
+/// Alpha-blend src over dst (straight / non-premultiplied alpha).
 #[inline]
 pub fn blend_over(dst: u32, src: u32) -> u32 {
     let [dr, dg, db, da] = unpack_rgba(dst);
     let [sr, sg, sb, sa] = unpack_rgba(src);
 
-    // Porter-Duff "src over dst" with premultiplied alpha:
-    //   out = src + dst * (1 - src_alpha)
+    // Porter-Duff "src over dst" for straight-alpha inputs (the pipeline packs
+    // fill colours non-premultiplied):
+    //   out_rgb = src_rgb*src_a + dst_rgb*(1 - src_a)
     let inv_sa = 1.0 - sa;
-    let out_r = sr + dr * inv_sa;
-    let out_g = sg + dg * inv_sa;
-    let out_b = sb + db * inv_sa;
+    let out_r = sr * sa + dr * inv_sa;
+    let out_g = sg * sa + dg * inv_sa;
+    let out_b = sb * sa + db * inv_sa;
     let out_a = sa + da * inv_sa;
 
     pack_rgba(out_r, out_g, out_b, out_a)

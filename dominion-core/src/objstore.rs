@@ -104,7 +104,14 @@ impl ObjStore {
             Some(m) if m.base_lba == base_lba => Some(m),
             _ => None,
         };
-        let next_gen = reuse.map(|m| m.generation).unwrap_or(0) + 1;
+        // Derive the next generation so a fresh save always supersedes what is
+        // already committed. With no in-memory prior, consult the on-disk root(s)
+        // via `read_root` (a lost/absent manifest must not reset to gen 1 and be
+        // shadowed by a surviving higher-generation root).
+        let next_gen = match reuse {
+            Some(m) => m.generation + 1,
+            None => read_root(dev, base_lba)?.map(|r| r.generation).unwrap_or(0) + 1,
+        };
 
         let new_manifest = if let Some(m) = reuse {
             // Fast path: every object already on disk keeps its immutable LBA, so its
@@ -379,18 +386,23 @@ fn decode_manifest(bytes: &[u8]) -> Option<ManifestParts> {
         let len = r.read_u32_le()?;
         index.insert(id, (lba, len));
     }
+    // The manifest is NOT integrity-protected (the root hash covers only the root
+    // record). Never pre-size a Vec from these untrusted counts — a single flipped
+    // length byte would request a ~4-billion-element allocation and abort the
+    // allocator. Push while reading instead; the `?`-checked cursor reads bound the
+    // loop and turn corruption into a graceful `None`.
     let head_len = r.read_u32_le()? as usize;
-    let mut head = Vec::with_capacity(head_len);
+    let mut head = Vec::new();
     for _ in 0..head_len {
         head.push(r.read_hash()?);
     }
     let hist_len = r.read_u32_le()? as usize;
-    let mut history = Vec::with_capacity(hist_len);
+    let mut history = Vec::new();
     for _ in 0..hist_len {
         let root = r.read_hash()?;
         let parent = r.read_hash()?;
         let live_len = r.read_u32_le()? as usize;
-        let mut live = Vec::with_capacity(live_len);
+        let mut live = Vec::new();
         for _ in 0..live_len {
             live.push(r.read_hash()?);
         }
