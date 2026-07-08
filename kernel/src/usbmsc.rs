@@ -313,7 +313,17 @@ fn check_csw(csw_virt: u64, expect_tag: u32) -> bool {
     let sig = u32::from_le_bytes([csw[0], csw[1], csw[2], csw[3]]);
     let tag = u32::from_le_bytes([csw[4], csw[5], csw[6], csw[7]]);
     // csw[8..12] = dCSWDataResidue; csw[12] = bCSWStatus (0 = passed, 1 = failed, 2 = phase error)
-    sig == CSW_SIGNATURE && tag == expect_tag && csw[12] == 0
+    let ok = sig == CSW_SIGNATURE && tag == expect_tag && csw[12] == 0;
+    if !ok {
+        crate::serial_println!(
+            "[usbmsc] CSW bad: sig={:#x} tag={} (want {}) status={}",
+            sig,
+            tag,
+            expect_tag,
+            csw[12]
+        );
+    }
+    ok
 }
 
 /// Build a READ(10)/WRITE(10) 10-byte CDB for `count` blocks at `lba` (32-bit LBA).

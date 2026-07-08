@@ -585,6 +585,14 @@ pub fn init() -> bool {
     if mmio_phys == 0 {
         return false;
     }
+    // If the USB mass-storage driver already brought up and owns this exact controller,
+    // do NOT touch it: our bringup does a full HCRST, which would wipe the live MSC slot,
+    // contexts and event ring and wedge every subsequent bulk transfer. HID input then
+    // relies on PS/2 / firmware emulation for this controller.
+    if crate::xhci::owns_controller(mmio_phys) {
+        hlog!("[usbhid] xHCI {:#x} owned by USB mass-storage; skipping HID bringup", mmio_phys);
+        return false;
+    }
     let mmio = dma::map_mmio(mmio_phys, 0x40000);
     hlog!("[usbhid] xHCI at {:#x}", mmio_phys);
     match bringup(mmio) {

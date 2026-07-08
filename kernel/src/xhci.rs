@@ -14,7 +14,22 @@
 use crate::dma::{self, DmaRegion};
 use crate::pci;
 use crate::usbmsc::{self, Bot, BulkTransport, Xfer};
+use core::sync::atomic::{AtomicU64, Ordering};
 use dominion_core::persist::{BlockDevice, BlockError, BLOCK_SIZE};
+
+/// Physical base of the xHCI controller this MSC driver brought up and now owns (0 = none).
+/// Once storage owns a controller, no other xHCI class driver (e.g. [`crate::usbhid`]) may
+/// reset it: an `HCRST` would wipe the slot/contexts and re-point the event ring out from
+/// under the live [`UsbMsc`] handle, wedging every subsequent bulk transfer. Recorded at
+/// [`probe`]; consulted by [`owns_controller`].
+static OWNED_MMIO: AtomicU64 = AtomicU64::new(0);
+
+/// True if the USB mass-storage driver already owns the xHCI controller at `mmio_phys`, so a
+/// second class driver must not re-initialise or reset it.
+pub fn owns_controller(mmio_phys: u64) -> bool {
+    let owned = OWNED_MMIO.load(Ordering::SeqCst);
+    owned != 0 && owned == mmio_phys
+}
 
 /// Verbose bring-up logging (helps post-mortem on real hardware via the boot log).
 const DEBUG: bool = true;
@@ -165,28 +180,25 @@ impl EventRing {
         self.seg.phys + (self.dequeue as u64) * 16
     }
 
-    /// Poll for the next event TRB. Returns (d0, d2, d3) or None on timeout.
+    /// Single, non-blocking check for the next event TRB. Returns the TRB immediately if
+    /// the controller has advanced the cycle bit, else `None` at once (no internal spin).
+    /// The caller owns the wait budget; keeping this single-shot avoids a nested
+    /// spin-loop, which would otherwise make an absent completion cost SPIN*SPIN
+    /// iterations (a multi-minute freeze) instead of SPIN.
     fn poll(&mut self) -> Option<(u64, u32, u32)> {
-        let mut spins = 0;
-        loop {
-            let p = self.seg.virt + (self.dequeue as u64) * 16;
-            let d3 = unsafe { r32(p + 12) };
-            if (d3 & 1) == self.ccs as u32 {
-                let d0 = unsafe { core::ptr::read_volatile(p as *const u64) };
-                let d2 = unsafe { r32(p + 8) };
-                self.dequeue += 1;
-                if self.dequeue == RING_TRBS {
-                    self.dequeue = 0;
-                    self.ccs = !self.ccs;
-                }
-                return Some((d0, d2, d3));
-            }
-            spins += 1;
-            if spins >= SPIN {
-                return None;
-            }
-            core::hint::spin_loop();
+        let p = self.seg.virt + (self.dequeue as u64) * 16;
+        let d3 = unsafe { r32(p + 12) };
+        if (d3 & 1) != self.ccs as u32 {
+            return None;
         }
+        let d0 = unsafe { core::ptr::read_volatile(p as *const u64) };
+        let d2 = unsafe { r32(p + 8) };
+        self.dequeue += 1;
+        if self.dequeue == RING_TRBS {
+            self.dequeue = 0;
+            self.ccs = !self.ccs;
+        }
+        Some((d0, d2, d3))
     }
 }
 
@@ -233,6 +245,7 @@ impl Transport {
         loop {
             total += 1;
             if total >= SPIN {
+                xlog!("[xhci] wait_event timeout (want type {})", want_type);
                 return None;
             }
             let (d0, d2, d3) = match self.event.poll() {
@@ -344,7 +357,12 @@ pub fn probe() -> Option<UsbMsc> {
     let mmio = dma::map_mmio(mmio_phys, 0x40000);
     xlog!("[xhci] controller at {:#x}", mmio_phys);
 
-    bringup(mmio)
+    let dev = bringup(mmio);
+    if dev.is_some() {
+        // Claim the controller so no other xHCI class driver resets it under us.
+        OWNED_MMIO.store(mmio_phys, Ordering::SeqCst);
+    }
+    dev
 }
 
 fn bringup(mmio: u64) -> Option<UsbMsc> {
@@ -708,11 +726,16 @@ impl Transport {
         let (cc, data_ptr, _) = self.wait_event(TRB_EVENT_TRANSFER)?;
         if data_ptr != trb_phys {
             xlog!(
-                "[xhci] bulk event data_ptr mismatch: got {:#x} expected {:#x}",
+                "[xhci] bulk event data_ptr mismatch: got {:#x} expected {:#x} (dir_in={}, len={})",
                 data_ptr,
-                trb_phys
+                trb_phys,
+                dir_in,
+                len
             );
             return None;
+        }
+        if cc != CC_SUCCESS && cc != CC_SHORT_PACKET {
+            xlog!("[xhci] bulk cc={} (dir_in={}, len={})", cc, dir_in, len);
         }
         Some(cc)
     }

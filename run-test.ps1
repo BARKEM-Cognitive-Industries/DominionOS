@@ -2,6 +2,10 @@
 # QEMU, and report the serial log + exit code (33 = all bare-metal tests pass).
 # Resolve the repo root from this script's own location so the launcher works from
 # any clone path without editing hardcoded directories.
+#
+# -ExtraFeatures adds cargo features on top of `qemu_test` (e.g. `usb_storage` to
+# activate the USB mass-storage auto-probe against the attached usb-storage device).
+param([string]$ExtraFeatures = "")
 $root = $PSScriptRoot
 $env:Path = (Join-Path $env:USERPROFILE '.cargo\bin') + ";C:\Program Files\qemu;" + $env:Path
 . "$root\qemu-common.ps1"
@@ -43,8 +47,10 @@ if (-not (Test-Path $usb)) {
   $fs.Close()
 }
 
+$features = "qemu_test"
+if ($ExtraFeatures) { $features = "qemu_test $ExtraFeatures" }
 Push-Location "$root\kernel"
-cargo build --release --features qemu_test 2>&1 | Select-Object -Last 2
+cargo build --release --features "$features" 2>&1 | Select-Object -Last 2
 Pop-Location
 
 Push-Location "$root\boot"
@@ -72,6 +78,8 @@ $p = Start-Process -FilePath "qemu-system-x86_64.exe" -ArgumentList @(
   "-device","virtio-net-pci,netdev=n0",
   "-netdev","user,id=n1",
   "-device","rtl8139,netdev=n1",
+  "-netdev","user,id=n2",
+  "-device","e1000,netdev=n2",
   "-device","isa-debug-exit,iobase=0xf4,iosize=0x04",
   "-serial","file:$log","-display","none","-no-reboot"
 ) -PassThru
